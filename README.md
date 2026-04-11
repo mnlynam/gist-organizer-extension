@@ -30,7 +30,8 @@ Install from the [Chrome Web Store](#) or load unpacked:
 ## Privacy
 
 Gist Organizer does not collect, store, or transmit any personal data.
-See [PRIVACY.md](PRIVACY.md) for the full privacy policy.
+See the [privacy policy](https://mnlynam.github.io/gist-organizer-extension/privacy/)
+(canonical source: [PRIVACY.md](PRIVACY.md)).
 
 ## Support
 
