@@ -1,9 +1,9 @@
-// Gist Organizer v2.1.2 — Chrome Extension
+// Gist Organizer v2.2.0 — Chrome Extension
 // Replaces the flat GitHub Gist list with a project-based file explorer.
 // https://github.com/mnlynam/gist-organizer-extension
 
 (function () {
-  var VERSION = '2.1.2';
+  var VERSION = '2.2.0';
 
   // hide.css (loaded via manifest at document_start) hides .application-main.
   // revealPage() makes it visible once tiles are built.
@@ -122,11 +122,15 @@
 
     // Tiles
     '.go-tiles { display: grid; grid-template-columns: repeat(auto-fill, minmax(160px, 1fr)); gap: 16px; padding: 20px; }',
-    '.go-tile { aspect-ratio: 1; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 8px; background: var(--bgColor-default, #0d1117); border: 1px solid var(--borderColor-default, #30363d); border-radius: 10px; cursor: pointer; user-select: none; transition: all 0.15s; padding: 16px 12px; text-align: center; }',
+    '.go-tile { position: relative; aspect-ratio: 1; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 8px; background: var(--bgColor-default, #0d1117); border: 1px solid var(--borderColor-default, #30363d); border-radius: 10px; cursor: pointer; user-select: none; transition: all 0.15s; padding: 16px 12px; text-align: center; }',
     '.go-tile:hover { border-color: var(--borderColor-accent-emphasis, #1f6feb); transform: translateY(-2px); box-shadow: 0 4px 12px rgba(0,0,0,0.3); }',
     '.go-tile .tile-icon { font-size: 32px; line-height: 1; }',
     '.go-tile .tile-name { font-weight: 600; font-size: 12px; color: var(--fgColor-default, #e6edf3); line-height: 1.3; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }',
     '.go-tile .tile-meta { font-size: 10px; color: var(--fgColor-muted, #7d8590); }',
+    '.go-tile .tile-rename { position: absolute; top: 6px; right: 6px; background: transparent; border: none; cursor: pointer; font-size: 12px; line-height: 1; padding: 4px 6px; border-radius: 4px; opacity: 0; transition: opacity 0.15s, background 0.15s; color: var(--fgColor-muted, #7d8590); }',
+    '.go-tile:hover .tile-rename { opacity: 0.75; }',
+    '.go-tile .tile-rename:hover { opacity: 1; background: var(--bgColor-neutral-muted, #1c2128); }',
+    '.go-tile .tile-rename:disabled { cursor: default; opacity: 0.5; }',
 
     // Footer
     '.go-footer { padding: 12px 20px; text-align: center; font-size: 11px; color: var(--fgColor-muted, #7d8590); border-top: 1px solid var(--borderColor-default, #30363d); }',
@@ -445,6 +449,109 @@
       });
   }
 
+  // Update a gist's description via the same edit-form replay path as saveFile.
+  // Used to rename projects: the project name is derived from the description,
+  // so renaming a project means POSTing a new description for every gist in the
+  // group.
+  function saveGistDescription(gistId, newDescription) {
+    return fetch('/' + pathUser + '/' + gistId + '/edit', { credentials: 'include' })
+      .then(function(res) {
+        if (!res.ok) throw new Error('Could not load edit page (HTTP ' + res.status + ')');
+        return res.text();
+      })
+      .then(function(html) {
+        var doc = new DOMParser().parseFromString(html, 'text/html');
+
+        var form = null;
+        var forms = doc.querySelectorAll('form');
+        for (var i = 0; i < forms.length; i++) {
+          if (forms[i].querySelector('input[name="gist[contents][][oid]"]')) {
+            form = forms[i];
+            break;
+          }
+        }
+        if (!form) throw new Error('Edit form not found on page');
+
+        var descEl = form.querySelector('input[name="gist[description]"], textarea[name="gist[description]"]');
+        if (!descEl) throw new Error('Description field not found');
+
+        var body = buildFormBody(form, descEl, newDescription);
+        var action = form.getAttribute('action') || ('/' + pathUser + '/' + gistId);
+
+        return fetch(action, {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/x-www-form-urlencoded',
+            'X-Requested-With': 'XMLHttpRequest',
+            'Accept': 'text/html, application/xhtml+xml'
+          },
+          credentials: 'include',
+          body: body,
+          redirect: 'follow'
+        });
+      })
+      .then(function(res) {
+        if (!res.ok && res.status !== 302 && res.status !== 303) {
+          throw new Error('HTTP ' + res.status);
+        }
+        delete editPageCache[gistId];
+      });
+  }
+
+  // --- Project rename (in-memory state + remote update) ---
+  function applyProjectRename(oldName, newName) {
+    if (oldName === newName) return;
+
+    var isMerge = Object.prototype.hasOwnProperty.call(groupMeta, newName);
+
+    if (isMerge) {
+      groupMeta[newName].files += groupMeta[oldName].files;
+      groupGistIds[newName] = groupGistIds[newName].concat(groupGistIds[oldName]);
+      // Drop caches on merge — safer to lazy-reload than try to splice together
+      // two partially-loaded file lists.
+      delete fileCache[newName];
+    } else {
+      groupMeta[newName] = groupMeta[oldName];
+      groupGistIds[newName] = groupGistIds[oldName];
+      if (fileCache[oldName]) fileCache[newName] = fileCache[oldName];
+    }
+
+    delete groupMeta[oldName];
+    delete groupGistIds[oldName];
+    delete fileCache[oldName];
+
+    var idx = sortedKeys.indexOf(oldName);
+    if (idx !== -1) sortedKeys.splice(idx, 1);
+    if (sortedKeys.indexOf(newName) === -1) sortedKeys.push(newName);
+    sortedKeys.sort(function(a, b) { return a.localeCompare(b); });
+
+    if (activeProject === oldName) activeProject = newName;
+  }
+
+  function beginRename(oldName, tileEl) {
+    var newName = window.prompt('Rename project:', oldName);
+    if (newName === null) return;
+    newName = newName.trim();
+    if (!newName || newName === oldName) return;
+
+    var gistIds = (groupGistIds[oldName] || []).slice();
+    if (!gistIds.length) return;
+
+    var renameBtn = tileEl ? tileEl.querySelector('.tile-rename') : null;
+    if (renameBtn) { renameBtn.disabled = true; renameBtn.textContent = '\u22EF'; }
+
+    Promise.all(gistIds.map(function(gistId) {
+      return saveGistDescription(gistId, newName);
+    })).then(function() {
+      applyProjectRename(oldName, newName);
+      renderBrowse();
+    }).catch(function(err) {
+      console.warn('[GistOrg] Rename failed:', err);
+      window.alert('Rename failed: ' + (err && err.message ? err.message : 'unknown error'));
+      if (renameBtn) { renameBtn.disabled = false; renameBtn.textContent = '\u270F\uFE0F'; }
+    });
+  }
+
   // --- Left panel builder ---
   function buildLeftPanel(activeFileObj) {
     leftPanel.innerHTML = '';
@@ -511,10 +618,36 @@
       tile.className = 'go-tile';
       var metaText = meta.files + ' file' + (meta.files !== 1 ? 's' : '');
       if (meta.time) metaText += ' \u00B7 ' + meta.time;
-      tile.innerHTML = '<span class="tile-icon">\uD83D\uDCC1</span>' +
-        '<span class="tile-name">' + project + '</span>' +
-        '<span class="tile-meta">' + metaText + '</span>';
+
+      // Build via createElement/textContent rather than innerHTML so that
+      // user-controlled project names (now editable via the rename button) can't
+      // smuggle HTML into the tile grid.
+      var iconSpan = document.createElement('span');
+      iconSpan.className = 'tile-icon';
+      iconSpan.textContent = '\uD83D\uDCC1';
+      var nameSpan = document.createElement('span');
+      nameSpan.className = 'tile-name';
+      nameSpan.textContent = project;
+      var metaSpan = document.createElement('span');
+      metaSpan.className = 'tile-meta';
+      metaSpan.textContent = metaText;
+      tile.appendChild(iconSpan);
+      tile.appendChild(nameSpan);
+      tile.appendChild(metaSpan);
+
       tile.addEventListener('click', function() { openProject(project); });
+
+      var renameBtn = document.createElement('button');
+      renameBtn.type = 'button';
+      renameBtn.className = 'tile-rename';
+      renameBtn.title = 'Rename project';
+      renameBtn.textContent = '\u270F\uFE0F';
+      renameBtn.addEventListener('click', function(e) {
+        e.stopPropagation();
+        beginRename(project, tile);
+      });
+      tile.appendChild(renameBtn);
+
       grid.appendChild(tile);
     });
 
