@@ -1,0 +1,77 @@
+body {
+  margin: 0;
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+  background: #0d1117;
+  color: #e6edf3;
+  width: 280px;
+}
+.popup {
+  padding: 20px;
+}
+.header {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin-bottom: 12px;
+}
+.logo {
+  width: 40px;
+  height: 40px;
+  border-radius: 8px;
+}
+.title {
+  font-weight: 700;
+  font-size: 16px;
+}
+.version {
+  font-size: 11px;
+  color: #7d8590;
+}
+.desc {
+  font-size: 13px;
+  color: #7d8590;
+  line-height: 1.4;
+  margin: 0 0 16px;
+}
+.links {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.link {
+  display: block;
+  text-align: center;
+  padding: 8px 12px;
+  border-radius: 6px;
+  font-size: 13px;
+  font-weight: 500;
+  text-decoration: none;
+  border: 1px solid #30363d;
+  color: #e6edf3;
+  background: #161b22;
+  transition: background 0.15s;
+}
+.link:hover {
+  background: #1c2128;
+}
+.link.donate {
+  background: #ffdd00;
+  color: #1a1a1a;
+  border-color: #ffdd00;
+  font-weight: 700;
+}
+.link.donate:hover {
+  background: #ffcc00;
+}
+.footer {
+  margin-top: 16px;
+  text-align: center;
+  font-size: 11px;
+}
+.footer a {
+  color: #7d8590;
+  text-decoration: none;
+}
+.footer a:hover {
+  color: #e6edf3;
+}
