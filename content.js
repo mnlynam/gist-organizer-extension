@@ -326,45 +326,98 @@
       });
   }
 
+  // Serialize every input/textarea/select in a <form> into a URL-encoded body.
+  // Used instead of hand-rolling the POST body so that whatever fields GitHub's
+  // current edit form includes (CSRF tokens, oids, hidden flags, etc.) are all
+  // preserved automatically.
+  function serializeForm(form) {
+    var parts = [];
+    var elements = form.querySelectorAll('input, textarea, select');
+    for (var i = 0; i < elements.length; i++) {
+      var el = elements[i];
+      var name = el.getAttribute('name');
+      if (!name || el.disabled) continue;
+      var type = (el.getAttribute('type') || '').toLowerCase();
+      if (type === 'submit' || type === 'button' || type === 'reset' ||
+          type === 'image' || type === 'file') continue;
+      if ((type === 'checkbox' || type === 'radio') && !el.checked) continue;
+      var value = el.value;
+      if (value === undefined || value === null) continue;
+      parts.push(encodeURIComponent(name) + '=' + encodeURIComponent(value));
+    }
+    return parts.join('&');
+  }
+
   function saveFile(gistId, filename, content) {
-    return fetchEditPageData(gistId).then(function(editData) {
-      var parts = [];
-      parts.push('_method=put');
-      parts.push('authenticity_token=' + encodeURIComponent(editData.csrf));
-      parts.push('gist%5Bdescription%5D=' + encodeURIComponent(editData.description));
-      var gistFiles = [];
-      for (var p in fileCache) {
-        if (fileCache[p]) {
-          fileCache[p].forEach(function(f) { if (f.gistId === gistId) gistFiles.push(f); });
+    // Always fetch the edit page fresh on save. The page gives us a live <form>
+    // with the current CSRF token and oids; reusing cached data risks sending
+    // stale oids (the gist may have been edited in another tab) which GitHub
+    // rejects with 422.
+    return fetch('/' + pathUser + '/' + gistId + '/edit', { credentials: 'include' })
+      .then(function(res) {
+        if (!res.ok) throw new Error('Could not load edit page (HTTP ' + res.status + ')');
+        return res.text();
+      })
+      .then(function(html) {
+        var doc = new DOMParser().parseFromString(html, 'text/html');
+
+        // Find the gist edit form — the one that contains the hidden oid inputs.
+        // We prefer this over matching by action URL or form class because those
+        // are more likely to change than the presence of this hidden field.
+        var form = null;
+        var forms = doc.querySelectorAll('form');
+        for (var i = 0; i < forms.length; i++) {
+          if (forms[i].querySelector('input[name="gist[contents][][oid]"]')) {
+            form = forms[i];
+            break;
+          }
         }
-      }
-      gistFiles.forEach(function(f) {
-        var oid = editData.fileOids[f.name] || '';
-        parts.push('gist%5Bcontents%5D%5B%5D%5Boid%5D=' + encodeURIComponent(oid));
-        parts.push('gist%5Bcontents%5D%5B%5D%5Bname%5D=' + encodeURIComponent(f.name));
-        parts.push('new_filename=' + encodeURIComponent(f.name));
-        if (f.name === filename) {
-          parts.push('content_changed=true');
-          parts.push('gist%5Bcontents%5D%5B%5D%5Bvalue%5D=' + encodeURIComponent(content));
-        } else {
-          parts.push('content_changed=false');
-          var existing = rawCache[gistId + ':' + f.name] || f.rawText || '';
-          parts.push('gist%5Bcontents%5D%5B%5D%5Bvalue%5D=' + encodeURIComponent(existing));
+        if (!form) throw new Error('Edit form not found on page');
+
+        // Pair name inputs with value textareas by DOM order. Rails' bare "[]"
+        // array syntax means the Nth name input corresponds to the Nth textarea,
+        // which is what querySelectorAll gives us.
+        var nameInputs = form.querySelectorAll('input[name="gist[contents][][name]"]');
+        var valueTas = form.querySelectorAll('textarea[name="gist[contents][][value]"]');
+        var target = null;
+        for (var j = 0; j < nameInputs.length; j++) {
+          if (nameInputs[j].value === filename) {
+            target = valueTas[j] || null;
+            break;
+          }
         }
+        // Single-file gists may have only one textarea even if the name lookup
+        // fails for some reason; fall back to that.
+        if (!target && valueTas.length === 1) target = valueTas[0];
+        if (!target) throw new Error('Could not locate editor for ' + filename);
+
+        // Overwrite the textarea's value in-place. serializeForm() below reads
+        // textarea.value, so this is enough to send the new content.
+        target.value = content;
+
+        var body = serializeForm(form);
+        var action = form.getAttribute('action') || ('/' + pathUser + '/' + gistId);
+
+        return fetch(action, {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/x-www-form-urlencoded',
+            'X-Requested-With': 'XMLHttpRequest',
+            'Accept': 'text/html, application/xhtml+xml'
+          },
+          credentials: 'include',
+          body: body,
+          redirect: 'follow'
+        });
+      })
+      .then(function(res) {
+        if (!res.ok && res.status !== 302 && res.status !== 303) {
+          throw new Error('HTTP ' + res.status);
+        }
+        rawCache[gistId + ':' + filename] = content;
+        delete fileCache[activeProject];
+        delete editPageCache[gistId];
       });
-      return fetch('/' + pathUser + '/' + gistId, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
-        credentials: 'include',
-        body: parts.join('&'),
-        redirect: 'follow'
-      });
-    }).then(function(res) {
-      if (!res.ok && res.status !== 302 && res.status !== 303) throw new Error('HTTP ' + res.status);
-      rawCache[gistId + ':' + filename] = content;
-      delete fileCache[activeProject];
-      delete editPageCache[gistId];
-    });
   }
 
   // --- Left panel builder ---
