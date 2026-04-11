@@ -27,6 +27,11 @@ Install from the [Chrome Web Store](#) or load unpacked:
 3. Enable "Developer mode"
 4. Click "Load unpacked" and select this directory
 
+## Privacy
+
+Gist Organizer does not collect, store, or transmit any personal data.
+See [PRIVACY.md](PRIVACY.md) for the full privacy policy.
+
 ## Support
 
 If you find this useful, consider [buying me a coffee](https://buymeacoffee.com/matthew81).
