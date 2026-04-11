@@ -1,9 +1,9 @@
-// Gist Organizer v2.1.1 — Chrome Extension
+// Gist Organizer v2.1.2 — Chrome Extension
 // Replaces the flat GitHub Gist list with a project-based file explorer.
 // https://github.com/mnlynam/gist-organizer-extension
 
 (function () {
-  var VERSION = '2.1.1';
+  var VERSION = '2.1.2';
 
   // hide.css (loaded via manifest at document_start) hides .application-main.
   // revealPage() makes it visible once tiles are built.
@@ -326,11 +326,28 @@
       });
   }
 
-  // Serialize every input/textarea/select in a <form> into a URL-encoded body.
-  // Used instead of hand-rolling the POST body so that whatever fields GitHub's
-  // current edit form includes (CSRF tokens, oids, hidden flags, etc.) are all
-  // preserved automatically.
-  function serializeForm(form) {
+  // Read a form element's submit value defensively. DOMParser-created documents
+  // have a quirk: setting `.value` on a <textarea> does not reliably update the
+  // value read back later, and in some cases the initial `.value` is empty even
+  // when the parsed textarea has child text. Fall back to defaultValue (the
+  // parsed initial text) or textContent if `.value` looks empty.
+  function readElementValue(el) {
+    var v = el.value;
+    if (el.tagName === 'TEXTAREA') {
+      if (v === undefined || v === null || v === '') {
+        if (el.defaultValue !== undefined && el.defaultValue !== '') return el.defaultValue;
+        return el.textContent || '';
+      }
+    }
+    return v;
+  }
+
+  // Serialize a <form> into a URL-encoded body, optionally substituting a new
+  // value for one specific element (by identity). This is used instead of
+  // mutating the parsed textarea in place, because setting textarea.value on a
+  // DOMParser document does not reliably round-trip — which caused silent "save
+  // succeeded, nothing changed" bugs where the original content was submitted.
+  function buildFormBody(form, overrideEl, overrideValue) {
     var parts = [];
     var elements = form.querySelectorAll('input, textarea, select');
     for (var i = 0; i < elements.length; i++) {
@@ -341,7 +358,7 @@
       if (type === 'submit' || type === 'button' || type === 'reset' ||
           type === 'image' || type === 'file') continue;
       if ((type === 'checkbox' || type === 'radio') && !el.checked) continue;
-      var value = el.value;
+      var value = (el === overrideEl) ? overrideValue : readElementValue(el);
       if (value === undefined || value === null) continue;
       parts.push(encodeURIComponent(name) + '=' + encodeURIComponent(value));
     }
@@ -391,11 +408,9 @@
         if (!target && valueTas.length === 1) target = valueTas[0];
         if (!target) throw new Error('Could not locate editor for ' + filename);
 
-        // Overwrite the textarea's value in-place. serializeForm() below reads
-        // textarea.value, so this is enough to send the new content.
-        target.value = content;
-
-        var body = serializeForm(form);
+        // Substitute the new content at serialization time rather than mutating
+        // the parsed DOM — see readElementValue() and buildFormBody() for why.
+        var body = buildFormBody(form, target, content);
         var action = form.getAttribute('action') || ('/' + pathUser + '/' + gistId);
 
         return fetch(action, {
@@ -415,7 +430,17 @@
           throw new Error('HTTP ' + res.status);
         }
         rawCache[gistId + ':' + filename] = content;
-        delete fileCache[activeProject];
+        // Update the cached file object in place so the left panel and any
+        // subsequent reads stay consistent with the just-saved content. We used
+        // to `delete fileCache[activeProject]` here, which blanked the file list
+        // as soon as the user clicked another file after saving.
+        if (fileCache[activeProject]) {
+          fileCache[activeProject].forEach(function(f) {
+            if (f.gistId === gistId && f.name === filename) {
+              f.rawText = content;
+            }
+          });
+        }
         delete editPageCache[gistId];
       });
   }
