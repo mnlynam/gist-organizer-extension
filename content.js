@@ -1,9 +1,9 @@
-// Gist Organizer v2.1 — Chrome Extension
+// Gist Organizer v2.1.1 — Chrome Extension
 // Replaces the flat GitHub Gist list with a project-based file explorer.
 // https://github.com/mnlynam/gist-organizer-extension
 
 (function () {
-  var VERSION = '2.1';
+  var VERSION = '2.1.1';
 
   // hide.css (loaded via manifest at document_start) hides .application-main.
   // revealPage() makes it visible once tiles are built.
