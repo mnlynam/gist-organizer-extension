@@ -29,4 +29,4 @@ Install from the [Chrome Web Store](#) or load unpacked:
 
 ## Support
 
-If you find this useful, consider [buying me a coffee](https://buymeacoffee.com/mnlynam).
+If you find this useful, consider [buying me a coffee](https://buymeacoffee.com/matthew81).
