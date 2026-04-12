@@ -1,9 +1,9 @@
-// Gist Organizer v2.4.0 — Chrome Extension
+// Gist Organizer v2.5.0 — Chrome Extension
 // Replaces the flat GitHub Gist list with a project-based file explorer.
 // https://github.com/mnlynam/gist-organizer-extension
 
 (function () {
-  var VERSION = '2.4.0';
+  var VERSION = '2.5.0';
 
   // hide.css (loaded via manifest at document_start) hides .application-main.
   // revealPage() makes it visible once tiles are built.
@@ -129,6 +129,10 @@
     '.go-tile .tile-name.editing { display: block; -webkit-line-clamp: unset; overflow: visible; white-space: normal; word-break: break-word; background: var(--bgColor-default, #0d1117); outline: 2px solid var(--borderColor-accent-emphasis, #1f6feb); cursor: text; user-select: text; }',
     '.go-tile .tile-name.saving { opacity: 0.5; }',
     '.go-tile .tile-meta { font-size: 10px; color: var(--fgColor-muted, #7d8590); }',
+    '.go-tile-add { border-style: dashed; opacity: 0.6; }',
+    '.go-tile-add:hover { opacity: 1; }',
+    '.go-tile-add .tile-icon { font-size: 28px; color: var(--fgColor-accent, #4493f8); }',
+    '.go-tiles.drag-over { outline: 2px dashed var(--borderColor-accent-emphasis, #1f6feb); outline-offset: -2px; border-radius: 8px; background: var(--bgColor-accent-muted, #121d2f); }',
 
     // Footer
     '.go-footer { padding: 12px 20px; text-align: center; font-size: 11px; color: var(--fgColor-muted, #7d8590); border-top: 1px solid var(--borderColor-default, #30363d); }',
@@ -687,6 +691,168 @@
     });
   }
 
+  // --- Folder reading helpers (for drag-drop + browse folder upload) ---
+
+  // Read a single FileSystemFileEntry (from webkitGetAsEntry) and return an
+  // array with one {name, content} object. Returns an array for consistency
+  // with readDirectoryEntries so they can be Promise.all'd and flattened.
+  function readFileEntry(entry) {
+    return new Promise(function(resolve, reject) {
+      entry.file(function(file) {
+        readFileAsText(file).then(function(content) {
+          resolve([{ name: file.name, content: content }]);
+        }).catch(reject);
+      }, reject);
+    });
+  }
+
+  // Recursively read all files in a FileSystemDirectoryEntry. Returns a flat
+  // array of {name, content} objects. Subdirectory files get flattened (no
+  // path nesting) because gists are flat file lists.
+  function readDirectoryEntries(dirEntry) {
+    return new Promise(function(resolve, reject) {
+      var reader = dirEntry.createReader();
+      var allEntries = [];
+      // readEntries returns results in batches — keep calling until empty.
+      function readBatch() {
+        reader.readEntries(function(batch) {
+          if (!batch.length) {
+            var promises = allEntries.map(function(e) {
+              if (e.isFile) return readFileEntry(e);
+              if (e.isDirectory) return readDirectoryEntries(e);
+              return Promise.resolve([]);
+            });
+            Promise.all(promises).then(function(results) {
+              var files = [];
+              results.forEach(function(r) { files = files.concat(r); });
+              resolve(files);
+            }).catch(reject);
+          } else {
+            allEntries = allEntries.concat(Array.prototype.slice.call(batch));
+            readBatch();
+          }
+        }, reject);
+      }
+      readBatch();
+    });
+  }
+
+  // Process a DataTransferItemList from a drop event. Detects directories via
+  // webkitGetAsEntry, reads their contents, and returns { folderName, files }.
+  function readDroppedItems(items) {
+    var entries = [];
+    var folderName = null;
+    for (var i = 0; i < items.length; i++) {
+      var entry = items[i].webkitGetAsEntry ? items[i].webkitGetAsEntry() : null;
+      if (entry) {
+        if (entry.isDirectory && !folderName) folderName = entry.name;
+        entries.push(entry);
+      }
+    }
+    if (!entries.length) return Promise.resolve({ folderName: null, files: [] });
+
+    return Promise.all(entries.map(function(entry) {
+      if (entry.isFile) return readFileEntry(entry);
+      if (entry.isDirectory) return readDirectoryEntries(entry);
+      return Promise.resolve([]);
+    })).then(function(results) {
+      var files = [];
+      results.forEach(function(r) { files = files.concat(r); });
+      return { folderName: folderName, files: files };
+    });
+  }
+
+  // Process a FileList from <input webkitdirectory>. The folder name is
+  // extracted from the first file's webkitRelativePath.
+  function readBrowsedFolder(fileList) {
+    var files = Array.prototype.slice.call(fileList || []);
+    if (!files.length) return Promise.resolve({ folderName: null, files: [] });
+    var firstPath = files[0].webkitRelativePath || '';
+    var folderName = firstPath.split('/')[0] || null;
+    return Promise.all(files.map(function(f) {
+      return readFileAsText(f).then(function(content) {
+        return { name: f.name, content: content };
+      });
+    })).then(function(fileData) {
+      return { folderName: folderName, files: fileData };
+    });
+  }
+
+  // Create a brand-new gist via the creation form on gist.github.com/.
+  // The form includes anti-spam fields (timestamp, honeypot) that we preserve
+  // by fetching the real page and serializing its form — but we skip the
+  // template file fields and description, replacing them with our own via
+  // extraFields. All gists are created as secret (gist[public]=0).
+  function createNewGist(description, files) {
+    return fetch('/', { credentials: 'include' })
+      .then(function(res) {
+        if (!res.ok) throw new Error('Could not load gist creation page (HTTP ' + res.status + ')');
+        return res.text();
+      })
+      .then(function(html) {
+        var doc = new DOMParser().parseFromString(html, 'text/html');
+
+        // Find the creation form — look for one that has a gist[description] field.
+        var form = null;
+        var forms = doc.querySelectorAll('form');
+        for (var i = 0; i < forms.length; i++) {
+          if (forms[i].querySelector('[name="gist[description]"]')) {
+            form = forms[i];
+            break;
+          }
+        }
+        if (!form) throw new Error('Gist creation form not found');
+
+        // Collect template fields to skip: description, default file slots,
+        // and the public flag — we'll re-add them with our values.
+        var skipEls = [];
+        var descEl = form.querySelector('input[name="gist[description]"], textarea[name="gist[description]"]');
+        if (descEl) skipEls.push(descEl);
+
+        form.querySelectorAll(
+          'input[name="gist[contents][][oid]"], ' +
+          'input[name="gist[contents][][name]"], ' +
+          'textarea[name="gist[contents][][value]"]'
+        ).forEach(function(el) { skipEls.push(el); });
+
+        var publicEl = form.querySelector('input[name="gist[public]"], select[name="gist[public]"]');
+        if (publicEl) skipEls.push(publicEl);
+
+        // Build our replacement fields.
+        var extraFields = [
+          { name: 'gist[description]', value: description }
+        ];
+        files.forEach(function(f) {
+          extraFields.push({ name: 'gist[contents][][oid]', value: '' });
+          extraFields.push({ name: 'gist[contents][][name]', value: f.name });
+          extraFields.push({ name: 'gist[contents][][value]', value: f.content });
+        });
+        extraFields.push({ name: 'gist[public]', value: '0' });
+
+        var body = buildFormBody(form, null, null, { skipEls: skipEls, extraFields: extraFields });
+        var action = form.getAttribute('action') || '/';
+
+        return fetch(action, {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/x-www-form-urlencoded',
+            'Accept': 'text/html, application/xhtml+xml'
+          },
+          credentials: 'include',
+          body: body,
+          redirect: 'follow'
+        });
+      })
+      .then(function(res) {
+        if (!res.ok && res.status !== 302 && res.status !== 303) {
+          throw new Error('HTTP ' + res.status);
+        }
+        // After redirect, res.url is the new gist's page URL, e.g.
+        // https://gist.github.com/mnlynam/abc123
+        return res.url;
+      });
+  }
+
   // Delete a file from a gist via the edit-form replay path. Rather than
   // omitting the file's fields (which would misalign Rails' positional array
   // grouping), GitHub's own UI keeps the name+oid, empties the value, and
@@ -1081,6 +1247,155 @@
     });
   }
 
+  // --- Create new project ---
+
+  // High-level handler: given a folder name and an array of {name, content},
+  // create a new gist and add it to the in-memory project list.
+  function handleCreateProject(folderName, fileDataArray) {
+    var projectName = (folderName || '').trim();
+
+    // Resolve conflicts / prompt for name.
+    while (!projectName || sortedKeys.indexOf(projectName) !== -1) {
+      var msg = !projectName
+        ? 'Enter a name for the new project:'
+        : 'A project named "' + projectName + '" already exists.\nEnter a different name (or Cancel):';
+      projectName = window.prompt(msg, projectName || 'New Project');
+      if (projectName === null) return; // cancelled
+      projectName = projectName.trim();
+    }
+
+    if (!fileDataArray || !fileDataArray.length) {
+      window.alert('No files found to upload.');
+      return;
+    }
+
+    // Show a subtle status while uploading.
+    flashStatus('Creating project "' + projectName + '"\u2026');
+
+    createNewGist(projectName, fileDataArray)
+      .then(function(gistUrl) {
+        // Extract gist ID from the redirect URL.
+        var parts = (gistUrl || '').split('/').filter(Boolean);
+        var gistId = parts[parts.length - 1];
+        if (!gistId || gistId.length < 5) throw new Error('Could not determine new gist ID from ' + gistUrl);
+
+        // Add to in-memory state.
+        groupMeta[projectName] = { files: fileDataArray.length, time: 'just now' };
+        groupGistIds[projectName] = [gistId];
+        fileCache[projectName] = fileDataArray.map(function(f) {
+          rawCache[gistId + ':' + f.name] = f.content;
+          return {
+            name: f.name,
+            gistId: gistId,
+            rawText: f.content,
+            rawUrl: null,
+            renderedHtml: ''
+          };
+        });
+
+        if (sortedKeys.indexOf(projectName) === -1) sortedKeys.push(projectName);
+        sortedKeys.sort(function(a, b) { return a.localeCompare(b); });
+
+        renderBrowse();
+        flashStatus('\u2713 Created project "' + projectName + '"');
+      })
+      .catch(function(err) {
+        console.warn('[GistOrg] Create project failed:', err);
+        window.alert('Create project failed: ' + (err && err.message ? err.message : 'unknown error'));
+      });
+  }
+
+  // --- Delete project ---
+
+  // Delete a gist entirely. The HAR shows this is a POST with
+  // _method=delete and an authenticity_token, sent to the gist URL.
+  // The CSRF token comes from the gist's own page.
+  function deleteGist(gistId) {
+    return fetch('/' + pathUser + '/' + gistId, { credentials: 'include' })
+      .then(function(res) {
+        if (!res.ok) throw new Error('Could not load gist page (HTTP ' + res.status + ')');
+        return res.text();
+      })
+      .then(function(html) {
+        var doc = new DOMParser().parseFromString(html, 'text/html');
+        // Find the delete form — look for a form with _method=delete.
+        var deleteForm = null;
+        var forms = doc.querySelectorAll('form');
+        for (var i = 0; i < forms.length; i++) {
+          var methodInput = forms[i].querySelector('input[name="_method"][value="delete"]');
+          if (methodInput) { deleteForm = forms[i]; break; }
+        }
+
+        // Fall back to finding CSRF token from any form and building manually.
+        var csrf = '';
+        if (deleteForm) {
+          var csrfEl = deleteForm.querySelector('input[name="authenticity_token"]');
+          csrf = csrfEl ? (csrfEl.value || csrfEl.getAttribute('value') || '') : '';
+        }
+        if (!csrf) {
+          var anyToken = doc.querySelector('input[name="authenticity_token"]') ||
+                         doc.querySelector('meta[name="csrf-token"]');
+          if (anyToken) csrf = anyToken.value || anyToken.getAttribute('content') || '';
+        }
+        if (!csrf) throw new Error('Could not find CSRF token for delete');
+
+        var body = '_method=delete&authenticity_token=' + encodeURIComponent(csrf);
+
+        return fetch('/' + pathUser + '/' + gistId, {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/x-www-form-urlencoded',
+            'Accept': 'text/html, application/xhtml+xml'
+          },
+          credentials: 'include',
+          body: body,
+          redirect: 'follow'
+        });
+      })
+      .then(function(res) {
+        if (!res.ok && res.status !== 302 && res.status !== 303) {
+          throw new Error('HTTP ' + res.status);
+        }
+        delete editPageCache[gistId];
+      });
+  }
+
+  // Delete an entire project — deletes every gist in the group, then removes
+  // the project from in-memory state and re-renders.
+  function handleDeleteProject(projectName) {
+    var gistIds = (groupGistIds[projectName] || []).slice();
+    if (!gistIds.length) return;
+
+    var fileCount = groupMeta[projectName] ? groupMeta[projectName].files : 0;
+    var msg = 'Delete project "' + projectName + '"';
+    if (gistIds.length === 1) {
+      msg += ' (' + fileCount + ' file' + (fileCount !== 1 ? 's' : '') + ')?';
+    } else {
+      msg += ' (' + gistIds.length + ' gists, ' + fileCount + ' files)?\n\nThis cannot be undone.';
+    }
+    if (!confirm(msg)) return;
+
+    flashStatus('Deleting project "' + projectName + '"\u2026');
+
+    Promise.all(gistIds.map(function(gistId) {
+      return deleteGist(gistId);
+    })).then(function() {
+      // Clean up in-memory state.
+      delete groupMeta[projectName];
+      delete groupGistIds[projectName];
+      delete fileCache[projectName];
+      var idx = sortedKeys.indexOf(projectName);
+      if (idx !== -1) sortedKeys.splice(idx, 1);
+      if (activeProject === projectName) activeProject = null;
+
+      renderBrowse();
+      flashStatus('\u2713 Deleted project "' + projectName + '"');
+    }).catch(function(err) {
+      console.warn('[GistOrg] Delete project failed:', err);
+      window.alert('Delete project failed: ' + (err && err.message ? err.message : 'unknown error'));
+    });
+  }
+
   // --- Context menu ---
   var activeContextMenu = null;
 
@@ -1321,11 +1636,77 @@
             startInlineEdit(nameSpan, project, function(newName) {
               renameProject(project, newName, nameSpan);
             });
+          }},
+          { label: 'Delete', danger: true, action: function() {
+            handleDeleteProject(project);
           }}
         ]);
       });
 
       grid.appendChild(tile);
+    });
+
+    // "+ New Project" tile — opens folder picker (browse) or accepts
+    // folder drops (drag-drop handler is on the grid itself below).
+    var addTile = document.createElement('div');
+    addTile.className = 'go-tile go-tile-add';
+    var addIcon = document.createElement('span');
+    addIcon.className = 'tile-icon';
+    addIcon.textContent = '+';
+    var addName = document.createElement('span');
+    addName.className = 'tile-name';
+    addName.textContent = 'New Project';
+    addTile.appendChild(addIcon);
+    addTile.appendChild(addName);
+
+    var folderInput = document.createElement('input');
+    folderInput.type = 'file';
+    folderInput.webkitdirectory = true;
+    folderInput.style.display = 'none';
+    folderInput.addEventListener('change', function() {
+      readBrowsedFolder(folderInput.files).then(function(result) {
+        if (result.files.length) handleCreateProject(result.folderName, result.files);
+      });
+      folderInput.value = '';
+    });
+    addTile.appendChild(folderInput);
+    addTile.addEventListener('click', function() { folderInput.click(); });
+    grid.appendChild(addTile);
+
+    // Drag-drop a folder onto the tile grid to create a new project.
+    grid.addEventListener('dragover', function(e) {
+      var types = e.dataTransfer && e.dataTransfer.types;
+      var hasFiles = false;
+      if (types) { for (var i = 0; i < types.length; i++) { if (types[i] === 'Files') { hasFiles = true; break; } } }
+      if (!hasFiles) return;
+      e.preventDefault();
+      e.dataTransfer.dropEffect = 'copy';
+      grid.classList.add('drag-over');
+    });
+    grid.addEventListener('dragleave', function(e) {
+      if (!e.relatedTarget || !grid.contains(e.relatedTarget)) {
+        grid.classList.remove('drag-over');
+      }
+    });
+    grid.addEventListener('drop', function(e) {
+      e.preventDefault();
+      grid.classList.remove('drag-over');
+      if (!e.dataTransfer) return;
+
+      // Prefer items (supports directories) over files (flat list only).
+      if (e.dataTransfer.items && e.dataTransfer.items.length) {
+        readDroppedItems(e.dataTransfer.items).then(function(result) {
+          if (result.files.length) handleCreateProject(result.folderName, result.files);
+        });
+      } else if (e.dataTransfer.files && e.dataTransfer.files.length) {
+        // Fallback: treat dropped files as a new project (no folder name).
+        var fileList = Array.prototype.slice.call(e.dataTransfer.files);
+        Promise.all(fileList.map(function(f) {
+          return readFileAsText(f).then(function(content) { return { name: f.name, content: content }; });
+        })).then(function(fileData) {
+          handleCreateProject(null, fileData);
+        });
+      }
     });
 
     mainPanel.appendChild(grid);
