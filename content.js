@@ -1,9 +1,9 @@
-// Gist Organizer v2.5.1 — Chrome Extension
+// Gist Organizer v2.6.0 — Chrome Extension
 // Replaces the flat GitHub Gist list with a project-based file explorer.
 // https://github.com/mnlynam/gist-organizer-extension
 
 (function () {
-  var VERSION = '2.5.1';
+  var VERSION = '2.6.0';
 
   // hide.css (loaded via manifest at document_start) hides .application-main.
   // revealPage() makes it visible once tiles are built.
@@ -177,6 +177,13 @@
     '.go-file-nav li .fn-name.saving { opacity: 0.5; }',
     '.go-file-nav li .fn-modified { width: 6px; height: 6px; border-radius: 50%; background: #d29922; margin-left: auto; flex-shrink: 0; }',
 
+    // Preload progress bar (bottom of left panel)
+    '.go-preload { padding: 10px 16px; border-top: 1px solid var(--borderColor-default, #30363d); margin-top: auto; }',
+    '.go-preload-track { height: 3px; background: var(--bgColor-neutral-muted, #1c2128); border-radius: 2px; overflow: hidden; }',
+    '.go-preload-fill { height: 100%; width: 0; background: var(--borderColor-accent-emphasis, #1f6feb); border-radius: 2px; transition: width 0.3s ease; }',
+    '.go-preload-fill.done { background: var(--fgColor-success, #3fb950); }',
+    '.go-preload-text { font-size: 11px; color: var(--fgColor-muted, #7d8590); margin-top: 5px; }',
+
     // Add-file row (left panel)
     '.go-add-file { display: flex; align-items: center; gap: 8px; padding: 8px 16px; cursor: pointer; font-size: 13px; color: var(--fgColor-accent, #4493f8); border-bottom: 1px solid var(--borderColor-default, #30363d); user-select: none; }',
     '.go-add-file:hover { background: var(--bgColor-neutral-muted, #1c2128); }',
@@ -281,6 +288,7 @@
   var activeFile = null;
   var cmInstance = null;
   var hasUnsavedChanges = false;
+  var preloadState = null; // { project, total, loaded, el } — active while preloading
 
   // --- Unsaved changes guard ---
   function confirmDiscard() {
@@ -1673,6 +1681,11 @@
       });
       leftPanel.appendChild(nav);
     }
+
+    // Re-attach preload progress bar if active for this project.
+    if (preloadState && preloadState.project === activeProject && preloadState.el) {
+      leftPanel.appendChild(preloadState.el);
+    }
   }
 
   // --- Unsaved indicator helpers ---
@@ -1704,6 +1717,7 @@
     activeFile = null;
     cmInstance = null;
     hasUnsavedChanges = false;
+    preloadState = null;
 
     var grid = document.createElement('div');
     grid.className = 'go-tiles';
@@ -1862,10 +1876,76 @@
     if (files.length) {
       buildLeftPanel(null);
       openFile(files[0]);
+      preloadProjectFiles(activeProject, files);
     } else {
       buildLeftPanel(null);
       mainPanel.innerHTML = '<div class="go-loading">No files found</div>';
     }
+  }
+
+  // --- Background preloading ---
+  // When a project is opened, preload every file's raw content (and edit-page
+  // data per unique gist) in the background so that switching between files
+  // is instantaneous. Shows a small progress bar at the bottom of the left
+  // panel that naturally survives buildLeftPanel calls via the preloadState
+  // module-level ref.
+
+  function preloadProjectFiles(project, files) {
+    if (!files || files.length === 0) return;
+
+    // Build the progress element.
+    var el = document.createElement('div');
+    el.className = 'go-preload';
+    var track = document.createElement('div');
+    track.className = 'go-preload-track';
+    var fill = document.createElement('div');
+    fill.className = 'go-preload-fill';
+    track.appendChild(fill);
+    var text = document.createElement('div');
+    text.className = 'go-preload-text';
+    text.textContent = 'Loading files\u2026';
+    el.appendChild(track);
+    el.appendChild(text);
+
+    preloadState = { project: project, total: files.length, loaded: 0, el: el };
+    leftPanel.appendChild(el);
+
+    // Collect unique gist IDs.
+    var gistIdSet = {};
+    files.forEach(function(f) { gistIdSet[f.gistId] = true; });
+
+    function tick() {
+      preloadState.loaded++;
+      var pct = Math.round((preloadState.loaded / preloadState.total) * 100);
+      fill.style.width = pct + '%';
+      text.textContent = 'Loading files\u2026 ' + preloadState.loaded + '/' + preloadState.total;
+
+      if (preloadState.loaded >= preloadState.total) {
+        fill.classList.add('done');
+        text.textContent = '\u2713 All files loaded';
+        setTimeout(function() {
+          if (preloadState && preloadState.project === project) {
+            if (el.parentNode) el.remove();
+            preloadState = null;
+          }
+        }, 1200);
+      }
+    }
+
+    // Preload all file contents in parallel. Each file that resolves (or
+    // rejects) bumps the counter.
+    files.forEach(function(f) {
+      fetchRawContent(f.gistId, f.name).then(function() {
+        if (preloadState && preloadState.project === project) tick();
+      }).catch(function() {
+        if (preloadState && preloadState.project === project) tick();
+      });
+    });
+
+    // Also prime the edit-page cache for each gist so saves are fast too.
+    Object.keys(gistIdSet).forEach(function(gistId) {
+      fetchEditPageData(gistId);
+    });
   }
 
   // --- Render: File editor ---
