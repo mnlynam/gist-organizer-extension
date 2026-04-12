@@ -1,9 +1,9 @@
-// Gist Organizer v2.2.0 — Chrome Extension
+// Gist Organizer v2.3.0 — Chrome Extension
 // Replaces the flat GitHub Gist list with a project-based file explorer.
 // https://github.com/mnlynam/gist-organizer-extension
 
 (function () {
-  var VERSION = '2.2.0';
+  var VERSION = '2.3.0';
 
   // hide.css (loaded via manifest at document_start) hides .application-main.
   // revealPage() makes it visible once tiles are built.
@@ -125,12 +125,11 @@
     '.go-tile { position: relative; aspect-ratio: 1; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 8px; background: var(--bgColor-default, #0d1117); border: 1px solid var(--borderColor-default, #30363d); border-radius: 10px; cursor: pointer; user-select: none; transition: all 0.15s; padding: 16px 12px; text-align: center; }',
     '.go-tile:hover { border-color: var(--borderColor-accent-emphasis, #1f6feb); transform: translateY(-2px); box-shadow: 0 4px 12px rgba(0,0,0,0.3); }',
     '.go-tile .tile-icon { font-size: 32px; line-height: 1; }',
-    '.go-tile .tile-name { font-weight: 600; font-size: 12px; color: var(--fgColor-default, #e6edf3); line-height: 1.3; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }',
+    '.go-tile .tile-name { font-weight: 600; font-size: 12px; color: var(--fgColor-default, #e6edf3); line-height: 1.3; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; padding: 1px 4px; border-radius: 3px; }',
+    '.go-tile .tile-name:hover { background: var(--bgColor-neutral-muted, #1c2128); }',
+    '.go-tile .tile-name.editing { display: block; -webkit-line-clamp: unset; overflow: visible; white-space: normal; word-break: break-word; background: var(--bgColor-default, #0d1117); outline: 2px solid var(--borderColor-accent-emphasis, #1f6feb); cursor: text; user-select: text; }',
+    '.go-tile .tile-name.saving { opacity: 0.5; }',
     '.go-tile .tile-meta { font-size: 10px; color: var(--fgColor-muted, #7d8590); }',
-    '.go-tile .tile-rename { position: absolute; top: 6px; right: 6px; background: transparent; border: none; cursor: pointer; font-size: 12px; line-height: 1; padding: 4px 6px; border-radius: 4px; opacity: 0; transition: opacity 0.15s, background 0.15s; color: var(--fgColor-muted, #7d8590); }',
-    '.go-tile:hover .tile-rename { opacity: 0.75; }',
-    '.go-tile .tile-rename:hover { opacity: 1; background: var(--bgColor-neutral-muted, #1c2128); }',
-    '.go-tile .tile-rename:disabled { cursor: default; opacity: 0.5; }',
 
     // Footer
     '.go-footer { padding: 12px 20px; text-align: center; font-size: 11px; color: var(--fgColor-muted, #7d8590); border-top: 1px solid var(--borderColor-default, #30363d); }',
@@ -146,7 +145,10 @@
     '.go-file-nav li:hover { background: var(--bgColor-neutral-muted, #1c2128); }',
     '.go-file-nav li.active { border-left-color: var(--borderColor-accent-emphasis, #1f6feb); background: var(--bgColor-accent-muted, #121d2f); color: var(--fgColor-accent, #4493f8); }',
     '.go-file-nav li .fn-icon { font-size: 14px; flex-shrink: 0; }',
-    '.go-file-nav li .fn-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }',
+    '.go-file-nav li .fn-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; padding: 1px 4px; border-radius: 3px; }',
+    '.go-file-nav li.active .fn-name { cursor: text; }',
+    '.go-file-nav li .fn-name.editing { overflow: visible; text-overflow: clip; white-space: normal; word-break: break-all; background: var(--bgColor-default, #0d1117); color: var(--fgColor-default, #e6edf3); outline: 2px solid var(--borderColor-accent-emphasis, #1f6feb); user-select: text; }',
+    '.go-file-nav li .fn-name.saving { opacity: 0.5; }',
     '.go-file-nav li .fn-modified { width: 6px; height: 6px; border-radius: 50%; background: #d29922; margin-left: auto; flex-shrink: 0; }',
 
     // Content header
@@ -498,6 +500,63 @@
       });
   }
 
+  // Rename a file inside a gist via the same edit-form replay path. Matches
+  // the current filename input by value, overrides it with the new filename,
+  // and POSTs the whole form. GitHub treats a changed name + unchanged oid as
+  // a rename.
+  function saveGistFilename(gistId, oldFilename, newFilename) {
+    return fetch('/' + pathUser + '/' + gistId + '/edit', { credentials: 'include' })
+      .then(function(res) {
+        if (!res.ok) throw new Error('Could not load edit page (HTTP ' + res.status + ')');
+        return res.text();
+      })
+      .then(function(html) {
+        var doc = new DOMParser().parseFromString(html, 'text/html');
+
+        var form = null;
+        var forms = doc.querySelectorAll('form');
+        for (var i = 0; i < forms.length; i++) {
+          if (forms[i].querySelector('input[name="gist[contents][][oid]"]')) {
+            form = forms[i];
+            break;
+          }
+        }
+        if (!form) throw new Error('Edit form not found on page');
+
+        var nameInputs = form.querySelectorAll('input[name="gist[contents][][name]"]');
+        var target = null;
+        for (var j = 0; j < nameInputs.length; j++) {
+          if (nameInputs[j].value === oldFilename) {
+            target = nameInputs[j];
+            break;
+          }
+        }
+        if (!target && nameInputs.length === 1) target = nameInputs[0];
+        if (!target) throw new Error('Could not locate filename input for ' + oldFilename);
+
+        var body = buildFormBody(form, target, newFilename);
+        var action = form.getAttribute('action') || ('/' + pathUser + '/' + gistId);
+
+        return fetch(action, {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/x-www-form-urlencoded',
+            'X-Requested-With': 'XMLHttpRequest',
+            'Accept': 'text/html, application/xhtml+xml'
+          },
+          credentials: 'include',
+          body: body,
+          redirect: 'follow'
+        });
+      })
+      .then(function(res) {
+        if (!res.ok && res.status !== 302 && res.status !== 303) {
+          throw new Error('HTTP ' + res.status);
+        }
+        delete editPageCache[gistId];
+      });
+  }
+
   // --- Project rename (in-memory state + remote update) ---
   function applyProjectRename(oldName, newName) {
     if (oldName === newName) return;
@@ -528,27 +587,148 @@
     if (activeProject === oldName) activeProject = newName;
   }
 
-  function beginRename(oldName, tileEl) {
-    var newName = window.prompt('Rename project:', oldName);
-    if (newName === null) return;
-    newName = newName.trim();
-    if (!newName || newName === oldName) return;
+  // Turn an existing element into an in-place editable field. Used for both
+  // project tiles and filenames in the left nav. Enter commits, Escape cancels,
+  // blur commits. Paste is forced to plain text so arbitrary markup can't end
+  // up in user data.
+  function startInlineEdit(el, oldValue, onCommit) {
+    el.contentEditable = 'true';
+    el.classList.add('editing');
+    el.focus();
+
+    // Select all existing text so the user can just start typing to replace.
+    var range = document.createRange();
+    range.selectNodeContents(el);
+    var sel = window.getSelection();
+    sel.removeAllRanges();
+    sel.addRange(range);
+
+    var resolved = false;
+
+    function cleanup() {
+      el.contentEditable = 'false';
+      el.classList.remove('editing');
+      el.removeEventListener('keydown', onKey);
+      el.removeEventListener('blur', onBlur);
+      el.removeEventListener('paste', onPaste);
+    }
+
+    function cancel() {
+      if (resolved) return;
+      resolved = true;
+      el.textContent = oldValue;
+      cleanup();
+    }
+
+    function commit() {
+      if (resolved) return;
+      resolved = true;
+      var newValue = (el.textContent || '').trim();
+      cleanup();
+      if (!newValue || newValue === oldValue) {
+        el.textContent = oldValue;
+        return;
+      }
+      el.textContent = newValue;
+      onCommit(newValue);
+    }
+
+    function onKey(e) {
+      if (e.key === 'Enter') {
+        e.preventDefault();
+        commit();
+      } else if (e.key === 'Escape') {
+        e.preventDefault();
+        cancel();
+      }
+    }
+
+    function onBlur() {
+      commit();
+    }
+
+    function onPaste(e) {
+      e.preventDefault();
+      var text = (e.clipboardData || window.clipboardData).getData('text');
+      document.execCommand('insertText', false, text);
+    }
+
+    el.addEventListener('keydown', onKey);
+    el.addEventListener('blur', onBlur);
+    el.addEventListener('paste', onPaste);
+  }
+
+  // POST the new description to every gist in a project group, then update
+  // in-memory state and re-render. Called after the user commits an inline
+  // edit on a tile name.
+  function renameProject(oldName, newName, nameEl) {
+    if (nameEl) nameEl.classList.add('saving');
 
     var gistIds = (groupGistIds[oldName] || []).slice();
-    if (!gistIds.length) return;
-
-    var renameBtn = tileEl ? tileEl.querySelector('.tile-rename') : null;
-    if (renameBtn) { renameBtn.disabled = true; renameBtn.textContent = '\u22EF'; }
+    if (!gistIds.length) {
+      if (nameEl) nameEl.classList.remove('saving');
+      return;
+    }
 
     Promise.all(gistIds.map(function(gistId) {
       return saveGistDescription(gistId, newName);
     })).then(function() {
       applyProjectRename(oldName, newName);
-      renderBrowse();
+      // Only re-render the tile grid if we're still in browse view. If the
+      // user navigated into a project while the save was in flight, the
+      // in-memory state is updated and the new name will appear next time
+      // they return to browse.
+      if (activeProject === null) renderBrowse();
     }).catch(function(err) {
       console.warn('[GistOrg] Rename failed:', err);
       window.alert('Rename failed: ' + (err && err.message ? err.message : 'unknown error'));
-      if (renameBtn) { renameBtn.disabled = false; renameBtn.textContent = '\u270F\uFE0F'; }
+      if (nameEl) {
+        nameEl.textContent = oldName;
+        nameEl.classList.remove('saving');
+      }
+    });
+  }
+
+  // POST a filename change for a single file, then update in-memory state:
+  // the file object's .name, the rawCache key, and the left-nav icon (which
+  // may change if the extension changed). If the renamed file is currently
+  // open, also update the content header.
+  function renameFile(fileObj, newName, fnNameEl) {
+    var oldName = fileObj.name;
+    if (fnNameEl) fnNameEl.classList.add('saving');
+
+    saveGistFilename(fileObj.gistId, oldName, newName).then(function() {
+      fileObj.name = newName;
+
+      var oldKey = fileObj.gistId + ':' + oldName;
+      var newKey = fileObj.gistId + ':' + newName;
+      if (Object.prototype.hasOwnProperty.call(rawCache, oldKey)) {
+        rawCache[newKey] = rawCache[oldKey];
+        delete rawCache[oldKey];
+      }
+
+      // Rebuild the left panel so the icon updates to match the new extension
+      // and the click handlers re-bind against the new name.
+      buildLeftPanel(activeFile);
+
+      // If this file is currently open in the editor, update the header name
+      // in place without re-rendering the editor (which would blow away
+      // CodeMirror state and any unsaved edits).
+      if (activeFile === fileObj) {
+        var chName = mainPanel.querySelector('.go-content-header .ch-name');
+        if (chName && chName.firstChild && chName.firstChild.nodeType === 3) {
+          chName.firstChild.textContent = newName;
+        } else if (chName) {
+          chName.textContent = newName;
+        }
+      }
+    }).catch(function(err) {
+      console.warn('[GistOrg] File rename failed:', err);
+      window.alert('Rename failed: ' + (err && err.message ? err.message : 'unknown error'));
+      if (fnNameEl) {
+        fnNameEl.textContent = oldName;
+        fnNameEl.classList.remove('saving');
+      }
     });
   }
 
@@ -557,7 +737,20 @@
     leftPanel.innerHTML = '';
     var pt = document.createElement('div');
     pt.className = 'go-project-tile';
-    pt.innerHTML = '<span class="pt-icon">\u2190</span><div><div class="pt-name">' + activeProject + '</div><div class="pt-meta">' + groupMeta[activeProject].files + ' files</div></div>';
+    var ptIcon = document.createElement('span');
+    ptIcon.className = 'pt-icon';
+    ptIcon.textContent = '\u2190';
+    var ptText = document.createElement('div');
+    var ptName = document.createElement('div');
+    ptName.className = 'pt-name';
+    ptName.textContent = activeProject;
+    var ptMeta = document.createElement('div');
+    ptMeta.className = 'pt-meta';
+    ptMeta.textContent = groupMeta[activeProject].files + ' files';
+    ptText.appendChild(ptName);
+    ptText.appendChild(ptMeta);
+    pt.appendChild(ptIcon);
+    pt.appendChild(ptText);
     pt.addEventListener('click', function() { if (confirmDiscard()) renderBrowse(); });
     leftPanel.appendChild(pt);
 
@@ -568,11 +761,34 @@
       files.forEach(function(f) {
         var li = document.createElement('li');
         if (activeFileObj && f === activeFileObj) li.className = 'active';
-        li.innerHTML = '<span class="fn-icon">' + fileIcon(f.name) + '</span><span class="fn-name">' + f.name + '</span>';
+
+        var fnIcon = document.createElement('span');
+        fnIcon.className = 'fn-icon';
+        fnIcon.textContent = fileIcon(f.name);
+        var fnName = document.createElement('span');
+        fnName.className = 'fn-name';
+        fnName.textContent = f.name;
+        li.appendChild(fnIcon);
+        li.appendChild(fnName);
+
         li.addEventListener('click', function() {
           if (f === activeFile) return;
           if (confirmDiscard()) openFile(f);
         });
+
+        // Click-to-rename, but only when the file is already active (same
+        // two-click-to-edit pattern as Finder/Explorer: first click selects,
+        // second click renames). Inactive file clicks bubble normally so the
+        // li handler above opens the file.
+        fnName.addEventListener('click', function(e) {
+          if (f !== activeFile) return;
+          e.stopPropagation();
+          if (fnName.isContentEditable) return;
+          startInlineEdit(fnName, f.name, function(newName) {
+            renameFile(f, newName, fnName);
+          });
+        });
+
         nav.appendChild(li);
       });
       leftPanel.appendChild(nav);
@@ -620,13 +836,14 @@
       if (meta.time) metaText += ' \u00B7 ' + meta.time;
 
       // Build via createElement/textContent rather than innerHTML so that
-      // user-controlled project names (now editable via the rename button) can't
-      // smuggle HTML into the tile grid.
+      // user-controlled project names (editable in place) can't smuggle HTML
+      // into the tile grid.
       var iconSpan = document.createElement('span');
       iconSpan.className = 'tile-icon';
       iconSpan.textContent = '\uD83D\uDCC1';
       var nameSpan = document.createElement('span');
       nameSpan.className = 'tile-name';
+      nameSpan.title = 'Click to rename';
       nameSpan.textContent = project;
       var metaSpan = document.createElement('span');
       metaSpan.className = 'tile-meta';
@@ -635,18 +852,17 @@
       tile.appendChild(nameSpan);
       tile.appendChild(metaSpan);
 
+      // Clicking anywhere on the tile opens the project — EXCEPT the name
+      // itself, which enters inline edit mode. The name handler stops
+      // propagation so the tile handler below doesn't also fire.
       tile.addEventListener('click', function() { openProject(project); });
-
-      var renameBtn = document.createElement('button');
-      renameBtn.type = 'button';
-      renameBtn.className = 'tile-rename';
-      renameBtn.title = 'Rename project';
-      renameBtn.textContent = '\u270F\uFE0F';
-      renameBtn.addEventListener('click', function(e) {
+      nameSpan.addEventListener('click', function(e) {
         e.stopPropagation();
-        beginRename(project, tile);
+        if (nameSpan.isContentEditable) return;
+        startInlineEdit(nameSpan, project, function(newName) {
+          renameProject(project, newName, nameSpan);
+        });
       });
-      tile.appendChild(renameBtn);
 
       grid.appendChild(tile);
     });
