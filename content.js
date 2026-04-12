@@ -1,9 +1,9 @@
-// Gist Organizer v2.5.0 — Chrome Extension
+// Gist Organizer v2.5.1 — Chrome Extension
 // Replaces the flat GitHub Gist list with a project-based file explorer.
 // https://github.com/mnlynam/gist-organizer-extension
 
 (function () {
-  var VERSION = '2.5.0';
+  var VERSION = '2.5.1';
 
   // hide.css (loaded via manifest at document_start) hides .application-main.
   // revealPage() makes it visible once tiles are built.
@@ -87,19 +87,42 @@
     return time ? time.textContent.trim() : '';
   }
 
+  // Detect whether a gist snippet is Secret or Public by looking for the
+  // label text that getProjectName deliberately skips.
+  function getVisibility(el) {
+    var meta = el.querySelector('.gist-snippet-meta');
+    if (!meta) return 'secret';
+    var spans = meta.querySelectorAll('.flex-order-1 span');
+    for (var i = 0; i < spans.length; i++) {
+      var text = spans[i].textContent.trim();
+      if (text === 'Public') return 'public';
+      if (text === 'Secret') return 'secret';
+    }
+    // Also check for a .Label element (GitHub sometimes puts it there).
+    var labels = meta.querySelectorAll('.Label');
+    for (var j = 0; j < labels.length; j++) {
+      var lt = labels[j].textContent.trim();
+      if (lt === 'Public') return 'public';
+      if (lt === 'Secret') return 'secret';
+    }
+    return 'secret'; // default to secret if unclear
+  }
+
   var FILE_ICONS = { js: '\uD83D\uDCDC', html: '\uD83C\uDF10', css: '\uD83C\uDFA8', md: '\uD83D\uDCDD', json: '\u2699\uFE0F', txt: '\uD83D\uDCC4', py: '\uD83D\uDC0D', rb: '\uD83D\uDC8E', sh: '\uD83D\uDCDF', bat: '\uD83D\uDCDF' };
   function fileIcon(name) { var ext = (name.split('.').pop() || '').toLowerCase(); return FILE_ICONS[ext] || '\uD83D\uDCC4'; }
 
   // --- Group gists by project ---
-  var groups = {}, groupMeta = {}, groupGistIds = {};
+  var groups = {}, groupMeta = {}, groupGistIds = {}, groupVisibility = {};
   snippets.forEach(function(el) {
     var project = getProjectName(el);
     var gistId = getGistId(el);
-    if (!groups[project]) { groups[project] = []; groupMeta[project] = { files: 0, time: '' }; groupGistIds[project] = []; }
+    if (!groups[project]) { groups[project] = []; groupMeta[project] = { files: 0, time: '' }; groupGistIds[project] = []; groupVisibility[project] = 'secret'; }
     groups[project].push(el);
     groupMeta[project].files += getFileCount(el);
     if (!groupMeta[project].time) groupMeta[project].time = getLastActive(el);
     if (gistId) groupGistIds[project].push(gistId);
+    // If any gist in the group is public, the project is public.
+    if (getVisibility(el) === 'public') groupVisibility[project] = 'public';
   });
   var sortedKeys = Object.keys(groups).sort(function(a, b) { return a.localeCompare(b); });
 
@@ -783,7 +806,7 @@
   // by fetching the real page and serializing its form — but we skip the
   // template file fields and description, replacing them with our own via
   // extraFields. All gists are created as secret (gist[public]=0).
-  function createNewGist(description, files) {
+  function createNewGist(description, files, isPublic) {
     return fetch('/', { credentials: 'include' })
       .then(function(res) {
         if (!res.ok) throw new Error('Could not load gist creation page (HTTP ' + res.status + ')');
@@ -827,7 +850,7 @@
           extraFields.push({ name: 'gist[contents][][name]', value: f.name });
           extraFields.push({ name: 'gist[contents][][value]', value: f.content });
         });
-        extraFields.push({ name: 'gist[public]', value: '0' });
+        extraFields.push({ name: 'gist[public]', value: isPublic ? '1' : '0' });
 
         var body = buildFormBody(form, null, null, { skipEls: skipEls, extraFields: extraFields });
         var action = form.getAttribute('action') || '/';
@@ -939,14 +962,18 @@
       // Drop caches on merge — safer to lazy-reload than try to splice together
       // two partially-loaded file lists.
       delete fileCache[newName];
+      // If either side is public, the merged project is public.
+      if (groupVisibility[oldName] === 'public') groupVisibility[newName] = 'public';
     } else {
       groupMeta[newName] = groupMeta[oldName];
       groupGistIds[newName] = groupGistIds[oldName];
+      groupVisibility[newName] = groupVisibility[oldName] || 'secret';
       if (fileCache[oldName]) fileCache[newName] = fileCache[oldName];
     }
 
     delete groupMeta[oldName];
     delete groupGistIds[oldName];
+    delete groupVisibility[oldName];
     delete fileCache[oldName];
 
     var idx = sortedKeys.indexOf(oldName);
@@ -1269,10 +1296,19 @@
       return;
     }
 
-    // Show a subtle status while uploading.
-    flashStatus('Creating project "' + projectName + '"\u2026');
+    // Ask about visibility. Default answer (Cancel) = secret.
+    var isPublic = confirm(
+      'Make "' + projectName + '" a public gist?\n\n' +
+      'OK \u2192 Public (visible to everyone, appears in search)\n' +
+      'Cancel \u2192 Secret (only accessible via direct link)\n\n' +
+      'You can always make a secret gist public later, but not the reverse.'
+    );
 
-    createNewGist(projectName, fileDataArray)
+    // Show a subtle status while uploading.
+    var visLabel = isPublic ? 'public' : 'secret';
+    flashStatus('Creating ' + visLabel + ' project "' + projectName + '"\u2026');
+
+    createNewGist(projectName, fileDataArray, isPublic)
       .then(function(gistUrl) {
         // Extract gist ID from the redirect URL.
         var parts = (gistUrl || '').split('/').filter(Boolean);
@@ -1282,6 +1318,7 @@
         // Add to in-memory state.
         groupMeta[projectName] = { files: fileDataArray.length, time: 'just now' };
         groupGistIds[projectName] = [gistId];
+        groupVisibility[projectName] = isPublic ? 'public' : 'secret';
         fileCache[projectName] = fileDataArray.map(function(f) {
           rawCache[gistId + ':' + f.name] = f.content;
           return {
@@ -1297,7 +1334,7 @@
         sortedKeys.sort(function(a, b) { return a.localeCompare(b); });
 
         renderBrowse();
-        flashStatus('\u2713 Created project "' + projectName + '"');
+        flashStatus('\u2713 Created ' + visLabel + ' project "' + projectName + '"');
       })
       .catch(function(err) {
         console.warn('[GistOrg] Create project failed:', err);
@@ -1360,6 +1397,71 @@
       });
   }
 
+  // Make a secret gist public. This is a one-way operation — public gists
+  // cannot be made secret again. Uses the make_public endpoint observed in
+  // the HAR: POST /{user}/{gistId}/make_public with _method=put + CSRF.
+  function makeGistPublic(gistId) {
+    // Fetch the edit page to get the CSRF token.
+    return fetch('/' + pathUser + '/' + gistId + '/edit', { credentials: 'include' })
+      .then(function(res) {
+        if (!res.ok) throw new Error('Could not load edit page (HTTP ' + res.status + ')');
+        return res.text();
+      })
+      .then(function(html) {
+        var doc = new DOMParser().parseFromString(html, 'text/html');
+        var csrf = '';
+        var csrfEl = doc.querySelector('input[name="authenticity_token"]') ||
+                     doc.querySelector('meta[name="csrf-token"]');
+        if (csrfEl) csrf = csrfEl.value || csrfEl.getAttribute('content') || '';
+        if (!csrf) throw new Error('Could not find CSRF token');
+
+        var body = '_method=put&authenticity_token=' + encodeURIComponent(csrf);
+
+        return fetch('/' + pathUser + '/' + gistId + '/make_public', {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/x-www-form-urlencoded',
+            'Accept': 'text/html, application/xhtml+xml'
+          },
+          credentials: 'include',
+          body: body,
+          redirect: 'follow'
+        });
+      })
+      .then(function(res) {
+        if (!res.ok && res.status !== 302 && res.status !== 303) {
+          throw new Error('HTTP ' + res.status);
+        }
+        delete editPageCache[gistId];
+      });
+  }
+
+  // Make all gists in a project public. Shows a warning about irreversibility.
+  function handleMakeProjectPublic(projectName) {
+    var gistIds = (groupGistIds[projectName] || []).slice();
+    if (!gistIds.length) return;
+
+    var ok = confirm(
+      'Make "' + projectName + '" public?\n\n' +
+      'Public gists are visible to everyone and appear in search.\n' +
+      'This cannot be undone \u2014 public gists cannot be made secret again.'
+    );
+    if (!ok) return;
+
+    flashStatus('Making "' + projectName + '" public\u2026');
+
+    Promise.all(gistIds.map(function(gistId) {
+      return makeGistPublic(gistId);
+    })).then(function() {
+      groupVisibility[projectName] = 'public';
+      renderBrowse();
+      flashStatus('\u2713 "' + projectName + '" is now public');
+    }).catch(function(err) {
+      console.warn('[GistOrg] Make public failed:', err);
+      window.alert('Make public failed: ' + (err && err.message ? err.message : 'unknown error'));
+    });
+  }
+
   // Delete an entire project — deletes every gist in the group, then removes
   // the project from in-memory state and re-renders.
   function handleDeleteProject(projectName) {
@@ -1383,6 +1485,7 @@
       // Clean up in-memory state.
       delete groupMeta[projectName];
       delete groupGistIds[projectName];
+      delete groupVisibility[projectName];
       delete fileCache[projectName];
       var idx = sortedKeys.indexOf(projectName);
       if (idx !== -1) sortedKeys.splice(idx, 1);
@@ -1609,8 +1712,10 @@
       var meta = groupMeta[project];
       var tile = document.createElement('div');
       tile.className = 'go-tile';
+      var vis = groupVisibility[project] || 'secret';
       var metaText = meta.files + ' file' + (meta.files !== 1 ? 's' : '');
       if (meta.time) metaText += ' \u00B7 ' + meta.time;
+      metaText += ' \u00B7 ' + (vis === 'public' ? 'Public' : 'Secret');
 
       // Build via createElement/textContent rather than innerHTML so that
       // user-controlled project names (editable in place) can't smuggle HTML
@@ -1631,16 +1736,23 @@
       tile.addEventListener('click', function() { openProject(project); });
       tile.addEventListener('contextmenu', function(e) {
         e.preventDefault();
-        showContextMenu(e.clientX, e.clientY, [
+        var menuItems = [
           { label: 'Rename', action: function() {
             startInlineEdit(nameSpan, project, function(newName) {
               renameProject(project, newName, nameSpan);
             });
-          }},
-          { label: 'Delete', danger: true, action: function() {
-            handleDeleteProject(project);
           }}
-        ]);
+        ];
+        // Only show "Make Public" for secret gists (public is irreversible).
+        if (groupVisibility[project] !== 'public') {
+          menuItems.push({ label: 'Make Public', action: function() {
+            handleMakeProjectPublic(project);
+          }});
+        }
+        menuItems.push({ label: 'Delete', danger: true, action: function() {
+          handleDeleteProject(project);
+        }});
+        showContextMenu(e.clientX, e.clientY, menuItems);
       });
 
       grid.appendChild(tile);
