@@ -162,6 +162,9 @@
     '.go-context-menu { position: fixed; background: var(--overlay-bgColor, #161b22); border: 1px solid var(--borderColor-default, #30363d); border-radius: 6px; box-shadow: 0 8px 24px rgba(0, 0, 0, 0.4); padding: 4px; z-index: 10000; min-width: 160px; font-size: 13px; }',
     '.go-context-menu-item { padding: 6px 12px; border-radius: 4px; cursor: pointer; color: var(--fgColor-default, #e6edf3); user-select: none; }',
     '.go-context-menu-item:hover { background: var(--bgColor-accent-emphasis, #1f6feb); color: #fff; }',
+    '.go-context-menu-item.danger { color: var(--fgColor-danger, #f85149); }',
+    '.go-context-menu-item.danger:hover { background: var(--bgColor-danger-emphasis, #da3633); color: #fff; }',
+    '.go-context-menu-separator { height: 1px; background: var(--borderColor-default, #30363d); margin: 4px 0; }',
 
     // Content header
     '.go-content-header { display: flex; align-items: center; justify-content: space-between; padding: 10px 16px; background: var(--bgColor-muted, #161b22); border-bottom: 1px solid var(--borderColor-default, #30363d); flex-shrink: 0; }',
@@ -684,6 +687,80 @@
     });
   }
 
+  // Delete a file from a gist via the edit-form replay path. Rather than
+  // omitting the file's fields (which would misalign Rails' positional array
+  // grouping), GitHub's own UI keeps the name+oid, empties the value, and
+  // injects gist[contents][][delete]=true in the same parameter group.
+  // We replicate that by inserting a hidden input into the DOMParser document
+  // right after the value textarea so buildFormBody serializes it in the
+  // correct position.
+  function deleteFileFromGist(gistId, filename) {
+    return fetch('/' + pathUser + '/' + gistId + '/edit', { credentials: 'include' })
+      .then(function(res) {
+        if (!res.ok) throw new Error('Could not load edit page (HTTP ' + res.status + ')');
+        return res.text();
+      })
+      .then(function(html) {
+        var doc = new DOMParser().parseFromString(html, 'text/html');
+
+        var form = null;
+        var forms = doc.querySelectorAll('form');
+        for (var i = 0; i < forms.length; i++) {
+          if (forms[i].querySelector('input[name="gist[contents][][oid]"]')) {
+            form = forms[i];
+            break;
+          }
+        }
+        if (!form) throw new Error('Edit form not found on page');
+
+        // Pair name inputs with value textareas by DOM order.
+        var nameInputs = form.querySelectorAll('input[name="gist[contents][][name]"]');
+        var valueTas = form.querySelectorAll('textarea[name="gist[contents][][value]"]');
+        var targetIdx = -1;
+        for (var j = 0; j < nameInputs.length; j++) {
+          if (nameInputs[j].value === filename) {
+            targetIdx = j;
+            break;
+          }
+        }
+        if (targetIdx === -1 && nameInputs.length === 1) targetIdx = 0;
+        if (targetIdx === -1) throw new Error('Could not locate file ' + filename);
+
+        var targetValueTa = valueTas[targetIdx];
+        if (!targetValueTa) throw new Error('Could not locate value textarea for ' + filename);
+
+        // Inject delete=true right after the value textarea so Rails groups it
+        // with this file's record (oid + name + value + delete).
+        var deleteInput = doc.createElement('input');
+        deleteInput.type = 'hidden';
+        deleteInput.setAttribute('name', 'gist[contents][][delete]');
+        deleteInput.value = 'true';
+        targetValueTa.parentNode.insertBefore(deleteInput, targetValueTa.nextSibling);
+
+        // Empty the value (GitHub does the same on delete).
+        var body = buildFormBody(form, targetValueTa, '');
+        var action = form.getAttribute('action') || ('/' + pathUser + '/' + gistId);
+
+        return fetch(action, {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/x-www-form-urlencoded',
+            'X-Requested-With': 'XMLHttpRequest',
+            'Accept': 'text/html, application/xhtml+xml'
+          },
+          credentials: 'include',
+          body: body,
+          redirect: 'follow'
+        });
+      })
+      .then(function(res) {
+        if (!res.ok && res.status !== 302 && res.status !== 303) {
+          throw new Error('HTTP ' + res.status);
+        }
+        delete editPageCache[gistId];
+      });
+  }
+
   // --- Project rename (in-memory state + remote update) ---
   function applyProjectRename(oldName, newName) {
     if (oldName === newName) return;
@@ -859,6 +936,51 @@
     });
   }
 
+  // Delete a single file from the currently open project. After the remote
+  // delete succeeds, removes it from in-memory caches and switches the editor
+  // to the next available file (or back to the empty-project placeholder).
+  function deleteFile(fileObj) {
+    var project = activeProject;
+    if (!project) return;
+
+    var files = fileCache[project] || [];
+    if (files.length <= 1) {
+      window.alert('Cannot delete the only file in a project. Delete the project instead.');
+      return;
+    }
+
+    if (!confirm('Delete "' + fileObj.name + '"?')) return;
+
+    deleteFileFromGist(fileObj.gistId, fileObj.name)
+      .then(function() {
+        // Remove from in-memory caches.
+        delete rawCache[fileObj.gistId + ':' + fileObj.name];
+        var idx = files.indexOf(fileObj);
+        if (idx !== -1) files.splice(idx, 1);
+        if (groupMeta[project]) groupMeta[project].files = Math.max(0, groupMeta[project].files - 1);
+
+        // If the deleted file was the active file, switch to the nearest
+        // remaining file (prefer the one below, else the one above).
+        if (activeFile === fileObj) {
+          var nextFile = files[Math.min(idx, files.length - 1)] || files[0] || null;
+          if (nextFile) {
+            openFile(nextFile);
+          } else {
+            activeFile = null;
+            buildLeftPanel(null);
+            mainPanel.innerHTML = '<div class="go-loading">No files found</div>';
+          }
+        } else {
+          buildLeftPanel(activeFile);
+        }
+        flashStatus('\u2713 Deleted ' + fileObj.name);
+      })
+      .catch(function(err) {
+        console.warn('[GistOrg] Delete failed:', err);
+        window.alert('Delete failed: ' + (err && err.message ? err.message : 'unknown error'));
+      });
+  }
+
   // --- Add files to project (drag-drop + browse) ---
 
   // Briefly flash a status banner above the main panel content. Used for
@@ -990,9 +1112,15 @@
     var menu = document.createElement('div');
     menu.className = 'go-context-menu';
 
-    items.forEach(function(item) {
+    items.forEach(function(item, idx) {
+      // Add a separator before danger items when they're not the first entry.
+      if (item.danger && idx > 0) {
+        var sep = document.createElement('div');
+        sep.className = 'go-context-menu-separator';
+        menu.appendChild(sep);
+      }
       var mi = document.createElement('div');
-      mi.className = 'go-context-menu-item';
+      mi.className = 'go-context-menu-item' + (item.danger ? ' danger' : '');
       mi.textContent = item.label;
       mi.addEventListener('click', function(e) {
         e.stopPropagation();
@@ -1116,6 +1244,9 @@
               startInlineEdit(fnName, f.name, function(newName) {
                 renameFile(f, newName, fnName);
               });
+            }},
+            { label: 'Delete', danger: true, action: function() {
+              deleteFile(f);
             }}
           ]);
         });
