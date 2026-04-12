@@ -1893,8 +1893,7 @@
   function preloadProjectFiles(project, files) {
     if (!files || files.length === 0) return;
 
-    var MIN_DURATION = 2000; // minimum ms the progress bar stays visible
-    var startTime = Date.now();
+    var FILE_DELAY = 500; // minimum ms between each file's progress tick
 
     // Build the progress element.
     var el = document.createElement('div');
@@ -1906,18 +1905,30 @@
     track.appendChild(fill);
     var text = document.createElement('div');
     text.className = 'go-preload-text';
-    text.textContent = 'Loading files\u2026';
+    text.textContent = 'Loading files\u2026 0/' + files.length;
     el.appendChild(track);
     el.appendChild(text);
 
     preloadState = { project: project, total: files.length, loaded: 0, el: el };
     leftPanel.appendChild(el);
 
-    // Collect unique gist IDs.
+    // Collect unique gist IDs and prime edit-page caches in parallel.
     var gistIdSet = {};
     files.forEach(function(f) { gistIdSet[f.gistId] = true; });
+    Object.keys(gistIdSet).forEach(function(gistId) {
+      fetchEditPageData(gistId);
+    });
+
+    function showTick(count) {
+      if (!preloadState || preloadState.project !== project) return;
+      preloadState.loaded = count;
+      var pct = Math.round((count / files.length) * 100);
+      fill.style.width = pct + '%';
+      text.textContent = 'Loading files\u2026 ' + count + '/' + files.length;
+    }
 
     function finish() {
+      if (!preloadState || preloadState.project !== project) return;
       fill.style.width = '100%';
       fill.classList.add('done');
       text.textContent = '\u2713 All files loaded';
@@ -1929,38 +1940,29 @@
       }, 1200);
     }
 
-    function tick() {
-      preloadState.loaded++;
-      // Cap the visual progress at 90% until the minimum duration has
-      // passed — this prevents a jarring instant-fill-then-wait.
-      var realPct = Math.round((preloadState.loaded / preloadState.total) * 100);
-      var displayPct = Math.min(realPct, 90);
-      fill.style.width = displayPct + '%';
-      text.textContent = 'Loading files\u2026 ' + preloadState.loaded + '/' + preloadState.total;
+    // Walk through files one at a time. Each step fetches the content (which
+    // may resolve instantly from cache) then waits for at least FILE_DELAY ms
+    // before showing the tick and moving to the next file. The actual fetch
+    // runs in parallel with the delay so slow network requests don't add
+    // FILE_DELAY on top — they just take however long they take.
+    function loadNext(i) {
+      if (i >= files.length) { finish(); return; }
 
-      if (preloadState.loaded >= preloadState.total) {
-        var elapsed = Date.now() - startTime;
-        var remaining = Math.max(0, MIN_DURATION - elapsed);
+      var stepStart = Date.now();
+      var f = files[i];
+
+      fetchRawContent(f.gistId, f.name).then(function() {}, function() {}).then(function() {
+        if (!preloadState || preloadState.project !== project) return;
+        var elapsed = Date.now() - stepStart;
+        var wait = Math.max(0, FILE_DELAY - elapsed);
         setTimeout(function() {
-          if (preloadState && preloadState.project === project) finish();
-        }, remaining);
-      }
+          showTick(i + 1);
+          loadNext(i + 1);
+        }, wait);
+      });
     }
 
-    // Preload all file contents in parallel. Each file that resolves (or
-    // rejects) bumps the counter.
-    files.forEach(function(f) {
-      fetchRawContent(f.gistId, f.name).then(function() {
-        if (preloadState && preloadState.project === project) tick();
-      }).catch(function() {
-        if (preloadState && preloadState.project === project) tick();
-      });
-    });
-
-    // Also prime the edit-page cache for each gist so saves are fast too.
-    Object.keys(gistIdSet).forEach(function(gistId) {
-      fetchEditPageData(gistId);
-    });
+    loadNext(0);
   }
 
   // --- Render: File editor ---
