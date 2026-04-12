@@ -1,9 +1,9 @@
-// Gist Organizer v2.3.1 — Chrome Extension
+// Gist Organizer v2.4.0 — Chrome Extension
 // Replaces the flat GitHub Gist list with a project-based file explorer.
 // https://github.com/mnlynam/gist-organizer-extension
 
 (function () {
-  var VERSION = '2.3.1';
+  var VERSION = '2.4.0';
 
   // hide.css (loaded via manifest at document_start) hides .application-main.
   // revealPage() makes it visible once tiles are built.
@@ -150,6 +150,14 @@
     '.go-file-nav li .fn-name.saving { opacity: 0.5; }',
     '.go-file-nav li .fn-modified { width: 6px; height: 6px; border-radius: 50%; background: #d29922; margin-left: auto; flex-shrink: 0; }',
 
+    // Add-file row (left panel)
+    '.go-add-file { display: flex; align-items: center; gap: 8px; padding: 8px 16px; cursor: pointer; font-size: 13px; color: var(--fgColor-accent, #4493f8); border-bottom: 1px solid var(--borderColor-default, #30363d); user-select: none; }',
+    '.go-add-file:hover { background: var(--bgColor-neutral-muted, #1c2128); }',
+    '.go-add-file .fn-icon { font-size: 16px; width: 14px; text-align: center; flex-shrink: 0; }',
+
+    // Drop target highlight (while dragging files over the left panel)
+    '.go-left.drag-over { background: var(--bgColor-accent-muted, #121d2f); outline: 2px dashed var(--borderColor-accent-emphasis, #1f6feb); outline-offset: -2px; }',
+
     // Context menu
     '.go-context-menu { position: fixed; background: var(--overlay-bgColor, #161b22); border: 1px solid var(--borderColor-default, #30363d); border-radius: 6px; box-shadow: 0 8px 24px rgba(0, 0, 0, 0.4); padding: 4px; z-index: 10000; min-width: 160px; font-size: 13px; }',
     '.go-context-menu-item { padding: 6px 12px; border-radius: 4px; cursor: pointer; color: var(--fgColor-default, #e6edf3); user-select: none; }',
@@ -201,6 +209,39 @@
   wrapper.appendChild(mainPanel);
   outerContainer.appendChild(wrapper);
   container.appendChild(outerContainer);
+
+  // Drag-drop files onto the left panel to add them to the open project.
+  // Bound once at layout time and gated on activeProject so it's a no-op while
+  // viewing the tile grid. dragleave has to check the target because moving
+  // between child elements fires leave events even though the drag is still
+  // over the panel.
+  leftPanel.addEventListener('dragover', function(e) {
+    if (!activeProject) return;
+    var types = e.dataTransfer && e.dataTransfer.types;
+    var hasFiles = false;
+    if (types) {
+      for (var i = 0; i < types.length; i++) { if (types[i] === 'Files') { hasFiles = true; break; } }
+    }
+    if (!hasFiles) return;
+    e.preventDefault();
+    e.dataTransfer.dropEffect = 'copy';
+    leftPanel.classList.add('drag-over');
+  });
+  leftPanel.addEventListener('dragleave', function(e) {
+    // relatedTarget is the element the cursor moved into; if it's still inside
+    // the panel we're still dragging over the panel.
+    if (!e.relatedTarget || !leftPanel.contains(e.relatedTarget)) {
+      leftPanel.classList.remove('drag-over');
+    }
+  });
+  leftPanel.addEventListener('drop', function(e) {
+    if (!activeProject) return;
+    e.preventDefault();
+    leftPanel.classList.remove('drag-over');
+    if (e.dataTransfer && e.dataTransfer.files && e.dataTransfer.files.length) {
+      handleAddFiles(e.dataTransfer.files);
+    }
+  });
 
   // --- State ---
   var fileCache = {};
@@ -357,11 +398,25 @@
   // mutating the parsed textarea in place, because setting textarea.value on a
   // DOMParser document does not reliably round-trip — which caused silent "save
   // succeeded, nothing changed" bugs where the original content was submitted.
-  function buildFormBody(form, overrideEl, overrideValue) {
+  //
+  // opts (optional):
+  //   skipEls: Array of element references to omit from serialization. Used to
+  //     remove a whole file record on delete (name + oid + value must ALL be
+  //     dropped together, otherwise Rails' bare-[] array parser misgroups the
+  //     remaining fields).
+  //   extraFields: Array of {name, value} pairs to append at the end of the
+  //     body. Used to add a new file entry without an oid — Rails starts a new
+  //     group whenever it sees a key that was already filled in the current
+  //     group, so appending name+value with no oid becomes a new file record.
+  function buildFormBody(form, overrideEl, overrideValue, opts) {
+    opts = opts || {};
+    var skipEls = opts.skipEls || null;
+    var extraFields = opts.extraFields || null;
     var parts = [];
     var elements = form.querySelectorAll('input, textarea, select');
     for (var i = 0; i < elements.length; i++) {
       var el = elements[i];
+      if (skipEls && skipEls.indexOf(el) !== -1) continue;
       var name = el.getAttribute('name');
       if (!name || el.disabled) continue;
       var type = (el.getAttribute('type') || '').toLowerCase();
@@ -371,6 +426,12 @@
       var value = (el === overrideEl) ? overrideValue : readElementValue(el);
       if (value === undefined || value === null) continue;
       parts.push(encodeURIComponent(name) + '=' + encodeURIComponent(value));
+    }
+    if (extraFields) {
+      for (var k = 0; k < extraFields.length; k++) {
+        var f = extraFields[k];
+        parts.push(encodeURIComponent(f.name) + '=' + encodeURIComponent(f.value));
+      }
     }
     return parts.join('&');
   }
@@ -561,6 +622,68 @@
       });
   }
 
+  // Append a new file to an existing gist via the same edit-form replay path.
+  // The appended file has no oid, which GitHub/Rails treats as "create new".
+  // Extra fields are added at the END of the body so Rails' array-param parser
+  // sees them as a brand-new record (it starts a new group whenever a bare-[]
+  // key is repeated within the current group).
+  function addFileToGist(gistId, filename, content) {
+    return fetch('/' + pathUser + '/' + gistId + '/edit', { credentials: 'include' })
+      .then(function(res) {
+        if (!res.ok) throw new Error('Could not load edit page (HTTP ' + res.status + ')');
+        return res.text();
+      })
+      .then(function(html) {
+        var doc = new DOMParser().parseFromString(html, 'text/html');
+
+        var form = null;
+        var forms = doc.querySelectorAll('form');
+        for (var i = 0; i < forms.length; i++) {
+          if (forms[i].querySelector('input[name="gist[contents][][oid]"]')) {
+            form = forms[i];
+            break;
+          }
+        }
+        if (!form) throw new Error('Edit form not found on page');
+
+        var body = buildFormBody(form, null, null, {
+          extraFields: [
+            { name: 'gist[contents][][name]', value: filename },
+            { name: 'gist[contents][][value]', value: content }
+          ]
+        });
+        var action = form.getAttribute('action') || ('/' + pathUser + '/' + gistId);
+
+        return fetch(action, {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/x-www-form-urlencoded',
+            'X-Requested-With': 'XMLHttpRequest',
+            'Accept': 'text/html, application/xhtml+xml'
+          },
+          credentials: 'include',
+          body: body,
+          redirect: 'follow'
+        });
+      })
+      .then(function(res) {
+        if (!res.ok && res.status !== 302 && res.status !== 303) {
+          throw new Error('HTTP ' + res.status);
+        }
+        delete editPageCache[gistId];
+      });
+  }
+
+  // Read a File (from drag-drop or <input type=file>) as UTF-8 text.
+  function readFileAsText(file) {
+    return new Promise(function(resolve, reject) {
+      var reader = new FileReader();
+      reader.onload = function() { resolve(reader.result); };
+      reader.onerror = function() { reject(reader.error || new Error('FileReader failed')); };
+      reader.readAsText(file);
+    });
+  }
+
   // --- Project rename (in-memory state + remote update) ---
   function applyProjectRename(oldName, newName) {
     if (oldName === newName) return;
@@ -736,6 +859,106 @@
     });
   }
 
+  // --- Add files to project (drag-drop + browse) ---
+
+  // Briefly flash a status banner above the main panel content. Used for
+  // upload success/error feedback since uploads happen outside the editor's
+  // own save/status flow.
+  function flashStatus(msg, kind) {
+    var status = document.createElement('div');
+    status.className = 'go-status ' + (kind || 'success');
+    status.textContent = msg;
+    // Insert at the top of mainPanel so it's visible regardless of what's
+    // currently rendered (tile grid, editor, or markdown view).
+    if (mainPanel.firstChild) {
+      mainPanel.insertBefore(status, mainPanel.firstChild);
+    } else {
+      mainPanel.appendChild(status);
+    }
+    setTimeout(function() { if (status.parentNode) status.remove(); }, kind === 'error' ? 5000 : 2500);
+  }
+
+  // Handle a FileList (from drag-drop or file input) being added to the
+  // currently open project. Walks the list sequentially — each upload has to
+  // wait for the previous one because they all POST to the same gist's edit
+  // form (each POST invalidates the old oids). On filename conflict, prompts
+  // the user to rename or cancel that one file.
+  function handleAddFiles(fileList) {
+    var project = activeProject;
+    if (!project) return;
+    var files = Array.prototype.slice.call(fileList || []);
+    if (!files.length) return;
+
+    // Pick a target gist: prefer the currently open file's gist (that's what
+    // the user's mental "current location" is), fall back to the first gist in
+    // the project group. In practice most projects map to one gist; multi-gist
+    // projects are only created when the user has multiple gists with the
+    // same description.
+    var targetGistId = (activeFile && activeFile.gistId) || (groupGistIds[project] || [])[0];
+    if (!targetGistId) { window.alert('No gist found for this project'); return; }
+
+    // Local copy of existing filenames that we grow as uploads succeed, so
+    // later files in the same batch see earlier uploads as "existing".
+    var existingNames = (fileCache[project] || []).map(function(f) { return f.name; });
+
+    function uploadOne(i) {
+      if (i >= files.length) return Promise.resolve();
+      var file = files[i];
+      var filename = file.name;
+
+      // Resolve conflicts by prompting for a new name. Null (Cancel) skips
+      // this file but continues the batch; empty name also skips.
+      while (existingNames.indexOf(filename) !== -1) {
+        var newName = window.prompt(
+          'A file named "' + filename + '" already exists in this project.\n' +
+          'Enter a new name (or Cancel to skip this file):',
+          filename
+        );
+        if (newName === null) return uploadOne(i + 1);
+        filename = (newName || '').trim();
+        if (!filename) return uploadOne(i + 1);
+      }
+
+      var finalName = filename;
+      return readFileAsText(file)
+        .then(function(content) {
+          return addFileToGist(targetGistId, finalName, content).then(function() { return content; });
+        })
+        .then(function(content) {
+          existingNames.push(finalName);
+          // Mutate the in-memory file list so the left panel rebuild shows the
+          // new file immediately, without a full project reload.
+          if (fileCache[project]) {
+            fileCache[project].push({
+              name: finalName,
+              gistId: targetGistId,
+              rawText: content,
+              rawUrl: null,
+              renderedHtml: ''
+            });
+          }
+          if (groupMeta[project]) groupMeta[project].files += 1;
+          rawCache[targetGistId + ':' + finalName] = content;
+          // Rebuild the left panel after each successful upload so progress is
+          // visible, but only if the user is still viewing the same project.
+          if (activeProject === project) buildLeftPanel(activeFile);
+          return uploadOne(i + 1);
+        })
+        .catch(function(err) {
+          console.warn('[GistOrg] Upload failed for', finalName, err);
+          flashStatus('Upload failed for ' + finalName + ': ' + (err && err.message ? err.message : 'unknown error'), 'error');
+          return uploadOne(i + 1);
+        });
+    }
+
+    uploadOne(0).then(function() {
+      if (activeProject === project) {
+        buildLeftPanel(activeFile);
+        flashStatus('\u2713 Added ' + files.length + ' file' + (files.length !== 1 ? 's' : ''));
+      }
+    });
+  }
+
   // --- Context menu ---
   var activeContextMenu = null;
 
@@ -825,6 +1048,31 @@
     pt.appendChild(ptText);
     pt.addEventListener('click', function() { if (confirmDiscard()) renderBrowse(); });
     leftPanel.appendChild(pt);
+
+    // Add-file row: click to browse, or users can drag-drop files onto the
+    // panel. The hidden file input is rebuilt on every left-panel render, but
+    // that's fine — it only exists to trigger the native file picker.
+    var addRow = document.createElement('div');
+    addRow.className = 'go-add-file';
+    var addIcon = document.createElement('span');
+    addIcon.className = 'fn-icon';
+    addIcon.textContent = '+';
+    var addLabel = document.createElement('span');
+    addLabel.className = 'fn-name';
+    addLabel.textContent = 'Add file\u2026';
+    addRow.appendChild(addIcon);
+    addRow.appendChild(addLabel);
+    var fileInput = document.createElement('input');
+    fileInput.type = 'file';
+    fileInput.multiple = true;
+    fileInput.style.display = 'none';
+    fileInput.addEventListener('change', function() {
+      handleAddFiles(fileInput.files);
+      fileInput.value = '';
+    });
+    addRow.appendChild(fileInput);
+    addRow.addEventListener('click', function() { fileInput.click(); });
+    leftPanel.appendChild(addRow);
 
     var files = fileCache[activeProject] || [];
     if (files.length) {
