@@ -1,9 +1,9 @@
-// Gist Organizer v2.3.0 — Chrome Extension
+// Gist Organizer v2.3.1 — Chrome Extension
 // Replaces the flat GitHub Gist list with a project-based file explorer.
 // https://github.com/mnlynam/gist-organizer-extension
 
 (function () {
-  var VERSION = '2.3.0';
+  var VERSION = '2.3.1';
 
   // hide.css (loaded via manifest at document_start) hides .application-main.
   // revealPage() makes it visible once tiles are built.
@@ -126,7 +126,6 @@
     '.go-tile:hover { border-color: var(--borderColor-accent-emphasis, #1f6feb); transform: translateY(-2px); box-shadow: 0 4px 12px rgba(0,0,0,0.3); }',
     '.go-tile .tile-icon { font-size: 32px; line-height: 1; }',
     '.go-tile .tile-name { font-weight: 600; font-size: 12px; color: var(--fgColor-default, #e6edf3); line-height: 1.3; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; padding: 1px 4px; border-radius: 3px; }',
-    '.go-tile .tile-name:hover { background: var(--bgColor-neutral-muted, #1c2128); }',
     '.go-tile .tile-name.editing { display: block; -webkit-line-clamp: unset; overflow: visible; white-space: normal; word-break: break-word; background: var(--bgColor-default, #0d1117); outline: 2px solid var(--borderColor-accent-emphasis, #1f6feb); cursor: text; user-select: text; }',
     '.go-tile .tile-name.saving { opacity: 0.5; }',
     '.go-tile .tile-meta { font-size: 10px; color: var(--fgColor-muted, #7d8590); }',
@@ -150,6 +149,11 @@
     '.go-file-nav li .fn-name.editing { overflow: visible; text-overflow: clip; white-space: normal; word-break: break-all; background: var(--bgColor-default, #0d1117); color: var(--fgColor-default, #e6edf3); outline: 2px solid var(--borderColor-accent-emphasis, #1f6feb); user-select: text; }',
     '.go-file-nav li .fn-name.saving { opacity: 0.5; }',
     '.go-file-nav li .fn-modified { width: 6px; height: 6px; border-radius: 50%; background: #d29922; margin-left: auto; flex-shrink: 0; }',
+
+    // Context menu
+    '.go-context-menu { position: fixed; background: var(--overlay-bgColor, #161b22); border: 1px solid var(--borderColor-default, #30363d); border-radius: 6px; box-shadow: 0 8px 24px rgba(0, 0, 0, 0.4); padding: 4px; z-index: 10000; min-width: 160px; font-size: 13px; }',
+    '.go-context-menu-item { padding: 6px 12px; border-radius: 4px; cursor: pointer; color: var(--fgColor-default, #e6edf3); user-select: none; }',
+    '.go-context-menu-item:hover { background: var(--bgColor-accent-emphasis, #1f6feb); color: #fff; }',
 
     // Content header
     '.go-content-header { display: flex; align-items: center; justify-content: space-between; padding: 10px 16px; background: var(--bgColor-muted, #161b22); border-bottom: 1px solid var(--borderColor-default, #30363d); flex-shrink: 0; }',
@@ -732,6 +736,74 @@
     });
   }
 
+  // --- Context menu ---
+  var activeContextMenu = null;
+
+  function closeContextMenu() {
+    if (!activeContextMenu) return;
+    activeContextMenu.remove();
+    activeContextMenu = null;
+    document.removeEventListener('mousedown', onContextMenuOutside, true);
+    document.removeEventListener('contextmenu', onContextMenuOutside, true);
+    document.removeEventListener('keydown', onContextMenuKey, true);
+    window.removeEventListener('blur', closeContextMenu);
+    window.removeEventListener('resize', closeContextMenu);
+    window.removeEventListener('scroll', closeContextMenu, true);
+  }
+
+  function onContextMenuOutside(e) {
+    if (activeContextMenu && !activeContextMenu.contains(e.target)) {
+      closeContextMenu();
+    }
+  }
+
+  function onContextMenuKey(e) {
+    if (e.key === 'Escape') closeContextMenu();
+  }
+
+  function showContextMenu(x, y, items) {
+    closeContextMenu();
+
+    var menu = document.createElement('div');
+    menu.className = 'go-context-menu';
+
+    items.forEach(function(item) {
+      var mi = document.createElement('div');
+      mi.className = 'go-context-menu-item';
+      mi.textContent = item.label;
+      mi.addEventListener('click', function(e) {
+        e.stopPropagation();
+        closeContextMenu();
+        item.action();
+      });
+      menu.appendChild(mi);
+    });
+
+    // Position off-screen first so we can measure, then clamp to viewport.
+    menu.style.left = '-9999px';
+    menu.style.top = '-9999px';
+    document.body.appendChild(menu);
+    var rect = menu.getBoundingClientRect();
+    var px = Math.min(x, window.innerWidth - rect.width - 8);
+    var py = Math.min(y, window.innerHeight - rect.height - 8);
+    menu.style.left = Math.max(8, px) + 'px';
+    menu.style.top = Math.max(8, py) + 'px';
+
+    activeContextMenu = menu;
+
+    // Defer attachment so the originating contextmenu event doesn't
+    // immediately close the menu via the global handlers below.
+    setTimeout(function() {
+      if (!activeContextMenu) return;
+      document.addEventListener('mousedown', onContextMenuOutside, true);
+      document.addEventListener('contextmenu', onContextMenuOutside, true);
+      document.addEventListener('keydown', onContextMenuKey, true);
+      window.addEventListener('blur', closeContextMenu);
+      window.addEventListener('resize', closeContextMenu);
+      window.addEventListener('scroll', closeContextMenu, true);
+    }, 0);
+  }
+
   // --- Left panel builder ---
   function buildLeftPanel(activeFileObj) {
     leftPanel.innerHTML = '';
@@ -789,6 +861,17 @@
           });
         });
 
+        li.addEventListener('contextmenu', function(e) {
+          e.preventDefault();
+          showContextMenu(e.clientX, e.clientY, [
+            { label: 'Rename', action: function() {
+              startInlineEdit(fnName, f.name, function(newName) {
+                renameFile(f, newName, fnName);
+              });
+            }}
+          ]);
+        });
+
         nav.appendChild(li);
       });
       leftPanel.appendChild(nav);
@@ -843,7 +926,6 @@
       iconSpan.textContent = '\uD83D\uDCC1';
       var nameSpan = document.createElement('span');
       nameSpan.className = 'tile-name';
-      nameSpan.title = 'Click to rename';
       nameSpan.textContent = project;
       var metaSpan = document.createElement('span');
       metaSpan.className = 'tile-meta';
@@ -852,16 +934,16 @@
       tile.appendChild(nameSpan);
       tile.appendChild(metaSpan);
 
-      // Clicking anywhere on the tile opens the project — EXCEPT the name
-      // itself, which enters inline edit mode. The name handler stops
-      // propagation so the tile handler below doesn't also fire.
       tile.addEventListener('click', function() { openProject(project); });
-      nameSpan.addEventListener('click', function(e) {
-        e.stopPropagation();
-        if (nameSpan.isContentEditable) return;
-        startInlineEdit(nameSpan, project, function(newName) {
-          renameProject(project, newName, nameSpan);
-        });
+      tile.addEventListener('contextmenu', function(e) {
+        e.preventDefault();
+        showContextMenu(e.clientX, e.clientY, [
+          { label: 'Rename', action: function() {
+            startInlineEdit(nameSpan, project, function(newName) {
+              renameProject(project, newName, nameSpan);
+            });
+          }}
+        ]);
       });
 
       grid.appendChild(tile);
