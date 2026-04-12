@@ -1893,6 +1893,9 @@
   function preloadProjectFiles(project, files) {
     if (!files || files.length === 0) return;
 
+    var MIN_DURATION = 2000; // minimum ms the progress bar stays visible
+    var startTime = Date.now();
+
     // Build the progress element.
     var el = document.createElement('div');
     el.className = 'go-preload';
@@ -1914,21 +1917,33 @@
     var gistIdSet = {};
     files.forEach(function(f) { gistIdSet[f.gistId] = true; });
 
+    function finish() {
+      fill.style.width = '100%';
+      fill.classList.add('done');
+      text.textContent = '\u2713 All files loaded';
+      setTimeout(function() {
+        if (preloadState && preloadState.project === project) {
+          if (el.parentNode) el.remove();
+          preloadState = null;
+        }
+      }, 1200);
+    }
+
     function tick() {
       preloadState.loaded++;
-      var pct = Math.round((preloadState.loaded / preloadState.total) * 100);
-      fill.style.width = pct + '%';
+      // Cap the visual progress at 90% until the minimum duration has
+      // passed — this prevents a jarring instant-fill-then-wait.
+      var realPct = Math.round((preloadState.loaded / preloadState.total) * 100);
+      var displayPct = Math.min(realPct, 90);
+      fill.style.width = displayPct + '%';
       text.textContent = 'Loading files\u2026 ' + preloadState.loaded + '/' + preloadState.total;
 
       if (preloadState.loaded >= preloadState.total) {
-        fill.classList.add('done');
-        text.textContent = '\u2713 All files loaded';
+        var elapsed = Date.now() - startTime;
+        var remaining = Math.max(0, MIN_DURATION - elapsed);
         setTimeout(function() {
-          if (preloadState && preloadState.project === project) {
-            if (el.parentNode) el.remove();
-            preloadState = null;
-          }
-        }, 1200);
+          if (preloadState && preloadState.project === project) finish();
+        }, remaining);
       }
     }
 
