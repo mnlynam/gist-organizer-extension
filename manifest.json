@@ -1,9 +1,9 @@
 {
   "manifest_version": 3,
   "name": "Gist Organizer",
-  "version": "2.6.3",
+  "version": "2.7.0",
   "description": "Replaces the flat GitHub Gist list with a project-based file explorer and syntax-highlighted editor.",
-  "permissions": [],
+  "permissions": ["storage"],
   "host_permissions": ["https://gist.github.com/*"],
   "content_scripts": [
     {

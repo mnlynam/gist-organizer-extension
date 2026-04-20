@@ -1,9 +1,24 @@
-// Gist Organizer v2.6.1 — Chrome Extension
+// Gist Organizer v2.7.0 — Chrome Extension
 // Replaces the flat GitHub Gist list with a project-based file explorer.
 // https://github.com/mnlynam/gist-organizer-extension
 
 (function () {
-  var VERSION = '2.6.1';
+  var VERSION = '2.7.0';
+
+  // Read user settings from chrome.storage.local before we touch the page.
+  // We need the 'enabled' flag early to decide whether to activate at all.
+  var SETTING_DEFAULTS = { enabled: true, defaultVisibility: 'secret', defaultSort: 'name' };
+  var settings = Object.assign({}, SETTING_DEFAULTS);
+
+  function loadSettings() {
+    return new Promise(function(resolve) {
+      if (!chrome || !chrome.storage || !chrome.storage.local) { resolve(settings); return; }
+      chrome.storage.local.get(SETTING_DEFAULTS, function(s) {
+        settings = Object.assign({}, SETTING_DEFAULTS, s || {});
+        resolve(settings);
+      });
+    });
+  }
 
   // hide.css (loaded via manifest at document_start) hides .application-main.
   // revealPage() makes it visible once tiles are built.
@@ -13,6 +28,10 @@
   }
 
   function init() {
+    // If the user disabled the organizer, bail out and leave the native page
+    // intact. hide.css would still be hiding .application-main, so undo that.
+    if (!settings.enabled) { revealPage(); return; }
+
     var snippets = document.querySelectorAll('.gist-snippet');
     if (!snippets.length) { revealPage(); return; }
 
@@ -28,11 +47,14 @@
     main(snippets, pathUser);
   }
 
-  if (document.readyState === 'loading') {
-    document.addEventListener('DOMContentLoaded', init);
-  } else {
-    init();
-  }
+  // Load settings first, then initialise once the DOM is ready.
+  loadSettings().then(function() {
+    if (document.readyState === 'loading') {
+      document.addEventListener('DOMContentLoaded', init);
+    } else {
+      init();
+    }
+  });
 
   function main(snippets, pathUser) {
 
@@ -82,6 +104,19 @@
     return 1;
   }
 
+  // Best-effort list of filenames visible on a snippet. Used by filters so
+  // we can match on filename even before a project has been opened.
+  function getFileNames(el) {
+    var names = [];
+    var fileEl = el.querySelector('.gist-snippet-meta .css-truncate-target');
+    if (fileEl) names.push(fileEl.textContent.trim());
+    el.querySelectorAll('.file-header .file-info a, .file-header strong, .file-info .gist-blob-name').forEach(function(n) {
+      var t = n.textContent.trim();
+      if (t && names.indexOf(t) === -1) names.push(t);
+    });
+    return names;
+  }
+
   function getLastActive(el) {
     var time = el.querySelector('.gist-snippet-meta relative-time');
     return time ? time.textContent.trim() : '';
@@ -124,7 +159,21 @@
     // If any gist in the group is public, the project is public.
     if (getVisibility(el) === 'public') groupVisibility[project] = 'public';
   });
-  var sortedKeys = Object.keys(groups).sort(function(a, b) { return a.localeCompare(b); });
+  // Compare function driven by the user's defaultSort setting. Name is the
+  // stable fallback when two items tie on the primary key.
+  function projectCompare(a, b) {
+    if (settings.defaultSort === 'files') {
+      var fa = (groupMeta[a] && groupMeta[a].files) || 0;
+      var fb = (groupMeta[b] && groupMeta[b].files) || 0;
+      if (fa !== fb) return fb - fa;
+    } else if (settings.defaultSort === 'recent') {
+      var ta = (groupMeta[a] && groupMeta[a].time) || '';
+      var tb = (groupMeta[b] && groupMeta[b].time) || '';
+      if (ta !== tb) return tb.localeCompare(ta);
+    }
+    return a.localeCompare(b);
+  }
+  var sortedKeys = Object.keys(groups).sort(projectCompare);
 
   // --- Replace page content ---
   var contentCol = document.querySelector('.col-9.col-md-9.col-12');
@@ -155,7 +204,28 @@
     '.go-tile-add { border-style: dashed; opacity: 0.6; }',
     '.go-tile-add:hover { opacity: 1; }',
     '.go-tile-add .tile-icon { font-size: 28px; color: var(--fgColor-accent, #4493f8); }',
+    '.go-tile .tile-star { position: absolute; top: 8px; right: 10px; color: #d4a72c; font-size: 14px; line-height: 1; text-shadow: 0 1px 2px rgba(0,0,0,0.4); }',
     '.go-tiles.drag-over { outline: 2px dashed var(--borderColor-accent-emphasis, #1f6feb); outline-offset: -2px; border-radius: 8px; background: var(--bgColor-accent-muted, #121d2f); }',
+    '.go-empty { grid-column: 1 / -1; padding: 40px 20px; text-align: center; font-size: 13px; color: var(--fgColor-muted, #7d8590); }',
+
+    // Filter bar
+    '.go-filter-bar { padding: 12px 20px 0; display: flex; flex-direction: column; gap: 10px; border-bottom: 1px solid var(--borderColor-default, #30363d); }',
+    '.go-filter-bar.collapsed { padding-bottom: 12px; }',
+    '.go-filter-bar.collapsed .go-filter-controls { display: none; }',
+    '.go-filter-toggle { display: inline-flex; align-items: center; gap: 6px; background: none; border: none; color: var(--fgColor-muted, #7d8590); font-size: 12px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.04em; cursor: pointer; padding: 0; align-self: flex-start; }',
+    '.go-filter-toggle:hover { color: var(--fgColor-default, #e6edf3); }',
+    '.go-filter-chev { display: inline-block; width: 0; height: 0; border-left: 4px solid transparent; border-right: 4px solid transparent; border-top: 5px solid currentColor; transition: transform 0.15s; }',
+    '.go-filter-bar.collapsed .go-filter-chev { transform: rotate(-90deg); }',
+    '.go-filter-controls { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; padding-bottom: 12px; }',
+    '.go-filter-search { flex: 1; min-width: 180px; }',
+    '.go-filter-search input { width: 100%; padding: 6px 10px; font-size: 13px; background: var(--bgColor-default, #0d1117); color: var(--fgColor-default, #e6edf3); border: 1px solid var(--borderColor-default, #30363d); border-radius: 6px; outline: none; }',
+    '.go-filter-search input:focus { border-color: var(--borderColor-accent-emphasis, #1f6feb); }',
+    '.go-filter-select { padding: 6px 28px 6px 10px; font-size: 13px; background: var(--bgColor-default, #0d1117); color: var(--fgColor-default, #e6edf3); border: 1px solid var(--borderColor-default, #30363d); border-radius: 6px; cursor: pointer; outline: none; appearance: none; background-image: url("data:image/svg+xml;utf8,<svg xmlns=\'http://www.w3.org/2000/svg\' width=\'10\' height=\'6\' viewBox=\'0 0 10 6\'><path fill=\'none\' stroke=\'%237d8590\' stroke-width=\'1.5\' stroke-linecap=\'round\' d=\'M1 1l4 4 4-4\'/></svg>"); background-repeat: no-repeat; background-position: right 10px center; }',
+    '.go-filter-star { display: inline-flex; align-items: center; gap: 6px; font-size: 13px; cursor: pointer; user-select: none; color: var(--fgColor-default, #e6edf3); padding: 6px 10px; background: var(--bgColor-default, #0d1117); border: 1px solid var(--borderColor-default, #30363d); border-radius: 6px; }',
+    '.go-filter-star input { margin: 0; }',
+    '.go-filter-star-glyph { color: #d4a72c; }',
+    '.go-filter-clear { padding: 6px 12px; font-size: 12px; background: transparent; color: var(--fgColor-muted, #7d8590); border: 1px solid transparent; border-radius: 6px; cursor: pointer; }',
+    '.go-filter-clear:hover { color: var(--fgColor-default, #e6edf3); border-color: var(--borderColor-default, #30363d); }',
 
     // Footer
     '.go-footer { padding: 12px 20px; text-align: center; font-size: 11px; color: var(--fgColor-muted, #7d8590); border-top: 1px solid var(--borderColor-default, #30363d); }',
@@ -295,6 +365,24 @@
   var cmInstance = null;
   var hasUnsavedChanges = false;
   var preloadState = null; // { project, total, loaded, el } — active while preloading
+  var starredGistIds = {}; // gistId -> true, populated async from /{user}/starred
+  var starredLoaded = false;
+
+  // Filter state persists per-origin so a return visit keeps the same view.
+  var FILTER_STORAGE_KEY = 'gistOrganizer.filters.v1';
+  var filterState = loadFilterState();
+
+  function loadFilterState() {
+    var defaults = { collapsed: false, search: '', visibility: 'all', starred: false, ext: 'all' };
+    try {
+      var raw = localStorage.getItem(FILTER_STORAGE_KEY);
+      if (!raw) return defaults;
+      return Object.assign({}, defaults, JSON.parse(raw) || {});
+    } catch (e) { return defaults; }
+  }
+  function persistFilterState() {
+    try { localStorage.setItem(FILTER_STORAGE_KEY, JSON.stringify(filterState)); } catch (e) {}
+  }
 
   // --- Unsaved changes guard ---
   function confirmDiscard() {
@@ -306,6 +394,100 @@
   window.addEventListener('beforeunload', function(e) {
     if (hasUnsavedChanges) { e.preventDefault(); e.returnValue = ''; }
   });
+
+  // Scrape the user's /starred page for gist IDs. Gracefully no-ops on failure
+  // (e.g., logged-out users or empty starred list) — the star filter just
+  // stays empty. Triggers a re-render if the filter UI is already mounted.
+  function fetchStarredGists() {
+    if (starredLoaded) return;
+    starredLoaded = true;
+    fetch('/' + pathUser + '/starred', { credentials: 'include' })
+      .then(function(res) { return res.ok ? res.text() : ''; })
+      .then(function(html) {
+        if (!html) return;
+        var doc = new DOMParser().parseFromString(html, 'text/html');
+        doc.querySelectorAll('.gist-snippet').forEach(function(el) {
+          var id = getGistId(el);
+          if (id) starredGistIds[id] = true;
+        });
+        if (typeof rerenderTiles === 'function' && !activeProject) rerenderTiles();
+      })
+      .catch(function() {});
+  }
+
+  // True if any gist in the project is in the starred set.
+  function isProjectStarred(project) {
+    var ids = groupGistIds[project] || [];
+    for (var i = 0; i < ids.length; i++) { if (starredGistIds[ids[i]]) return true; }
+    return false;
+  }
+
+  // Collect all unique file extensions across known projects so the filter
+  // dropdown can offer real choices. Uses fileCache when a project has been
+  // opened, or derives from the snippet metadata otherwise.
+  function collectExtensions() {
+    var exts = {};
+    Object.keys(groups).forEach(function(project) {
+      var files = fileCache[project];
+      if (files && files.length) {
+        files.forEach(function(f) {
+          var dot = f.name.lastIndexOf('.');
+          if (dot > 0) exts[f.name.substring(dot + 1).toLowerCase()] = true;
+        });
+      } else {
+        (groups[project] || []).forEach(function(el) {
+          var names = getFileNames(el) || [];
+          names.forEach(function(n) {
+            var dot = n.lastIndexOf('.');
+            if (dot > 0) exts[n.substring(dot + 1).toLowerCase()] = true;
+          });
+        });
+      }
+    });
+    return Object.keys(exts).sort();
+  }
+
+  // Does this project contain at least one file with the given extension?
+  function projectHasExt(project, ext) {
+    if (!ext || ext === 'all') return true;
+    var files = fileCache[project];
+    if (files && files.length) {
+      return files.some(function(f) { return f.name.toLowerCase().endsWith('.' + ext); });
+    }
+    var snippets = groups[project] || [];
+    for (var i = 0; i < snippets.length; i++) {
+      var names = getFileNames(snippets[i]) || [];
+      if (names.some(function(n) { return n.toLowerCase().endsWith('.' + ext); })) return true;
+    }
+    return false;
+  }
+
+  // Apply current filters to the sorted project list. Search matches project
+  // name OR any known filename within the project.
+  function filteredProjects() {
+    var q = (filterState.search || '').trim().toLowerCase();
+    return sortedKeys.filter(function(project) {
+      if (filterState.visibility === 'public' && groupVisibility[project] !== 'public') return false;
+      if (filterState.visibility === 'secret' && groupVisibility[project] === 'public') return false;
+      if (filterState.starred && !isProjectStarred(project)) return false;
+      if (!projectHasExt(project, filterState.ext)) return false;
+      if (q) {
+        if (project.toLowerCase().indexOf(q) !== -1) return true;
+        var files = fileCache[project];
+        if (files && files.some(function(f) { return f.name.toLowerCase().indexOf(q) !== -1; })) return true;
+        var snippets = groups[project] || [];
+        for (var i = 0; i < snippets.length; i++) {
+          var names = getFileNames(snippets[i]) || [];
+          if (names.some(function(n) { return n.toLowerCase().indexOf(q) !== -1; })) return true;
+        }
+        return false;
+      }
+      return true;
+    });
+  }
+
+  // Placeholder; overwritten by renderBrowse after it builds the grid.
+  var rerenderTiles = null;
 
   // --- Keyboard shortcuts ---
   document.addEventListener('keydown', function(e) {
@@ -1071,7 +1253,7 @@
     var idx = sortedKeys.indexOf(oldName);
     if (idx !== -1) sortedKeys.splice(idx, 1);
     if (sortedKeys.indexOf(newName) === -1) sortedKeys.push(newName);
-    sortedKeys.sort(function(a, b) { return a.localeCompare(b); });
+    sortedKeys.sort(projectCompare);
 
     if (activeProject === oldName) activeProject = newName;
   }
@@ -1427,13 +1609,9 @@
       return;
     }
 
-    // Ask about visibility. Default answer (Cancel) = secret.
-    var isPublic = confirm(
-      'Make "' + projectName + '" a public gist?\n\n' +
-      'OK \u2192 Public (visible to everyone, appears in search)\n' +
-      'Cancel \u2192 Secret (only accessible via direct link)\n\n' +
-      'You can always make a secret gist public later, but not the reverse.'
-    );
+    // Use the user's default visibility without asking. They can still flip
+    // an individual project afterwards via the tile context menu.
+    var isPublic = settings.defaultVisibility === 'public';
 
     // Show a subtle status while uploading.
     var visLabel = isPublic ? 'public' : 'secret';
@@ -1462,7 +1640,7 @@
         });
 
         if (sortedKeys.indexOf(projectName) === -1) sortedKeys.push(projectName);
-        sortedKeys.sort(function(a, b) { return a.localeCompare(b); });
+        sortedKeys.sort(projectCompare);
 
         renderBrowse();
         flashStatus('\u2713 Created ' + visLabel + ' project "' + projectName + '"');
@@ -1851,61 +2029,135 @@
     hasUnsavedChanges = false;
     preloadState = null;
 
+    var filterBar = buildFilterBar();
+    mainPanel.appendChild(filterBar);
+
     var grid = document.createElement('div');
     grid.className = 'go-tiles';
+    mainPanel.appendChild(grid);
 
-    sortedKeys.forEach(function(project) {
-      var meta = groupMeta[project];
-      var tile = document.createElement('div');
-      tile.className = 'go-tile';
-      var vis = groupVisibility[project] || 'secret';
-      var metaText = meta.files + ' file' + (meta.files !== 1 ? 's' : '');
-      if (meta.time) metaText += ' \u00B7 ' + meta.time;
-      metaText += ' \u00B7 ' + (vis === 'public' ? 'Public' : 'Secret');
+    var footer = document.createElement('div');
+    footer.className = 'go-footer';
+    mainPanel.appendChild(footer);
 
-      // Build via createElement/textContent rather than innerHTML so that
-      // user-controlled project names (editable in place) can't smuggle HTML
-      // into the tile grid.
-      var iconSpan = document.createElement('span');
-      iconSpan.className = 'tile-icon';
-      iconSpan.textContent = '\uD83D\uDCC1';
-      var nameSpan = document.createElement('span');
-      nameSpan.className = 'tile-name';
-      nameSpan.textContent = project;
-      var metaSpan = document.createElement('span');
-      metaSpan.className = 'tile-meta';
-      metaSpan.textContent = metaText;
-      tile.appendChild(iconSpan);
-      tile.appendChild(nameSpan);
-      tile.appendChild(metaSpan);
-
-      tile.addEventListener('click', function() { openProject(project); });
-      tile.addEventListener('contextmenu', function(e) {
-        e.preventDefault();
-        var menuItems = [
-          { label: 'Rename', action: function() {
-            startInlineEdit(nameSpan, project, function(newName) {
-              renameProject(project, newName, nameSpan);
-            });
-          }}
-        ];
-        // Only show "Make Public" for secret gists (public is irreversible).
-        if (groupVisibility[project] !== 'public') {
-          menuItems.push({ label: 'Make Public', action: function() {
-            handleMakeProjectPublic(project);
-          }});
-        }
-        menuItems.push({ label: 'Delete', danger: true, action: function() {
-          handleDeleteProject(project);
-        }});
-        showContextMenu(e.clientX, e.clientY, menuItems);
-      });
-
-      grid.appendChild(tile);
+    // Drag-drop a folder onto the tile grid to create a new project.
+    grid.addEventListener('dragover', function(e) {
+      var types = e.dataTransfer && e.dataTransfer.types;
+      var hasFiles = false;
+      if (types) { for (var i = 0; i < types.length; i++) { if (types[i] === 'Files') { hasFiles = true; break; } } }
+      if (!hasFiles) return;
+      e.preventDefault();
+      e.dataTransfer.dropEffect = 'copy';
+      grid.classList.add('drag-over');
+    });
+    grid.addEventListener('dragleave', function(e) {
+      if (!e.relatedTarget || !grid.contains(e.relatedTarget)) {
+        grid.classList.remove('drag-over');
+      }
+    });
+    grid.addEventListener('drop', function(e) {
+      e.preventDefault();
+      grid.classList.remove('drag-over');
+      if (!e.dataTransfer) return;
+      if (e.dataTransfer.items && e.dataTransfer.items.length) {
+        readDroppedItems(e.dataTransfer.items).then(function(result) {
+          if (result.files.length) handleCreateProject(result.folderName, result.files);
+        });
+      } else if (e.dataTransfer.files && e.dataTransfer.files.length) {
+        var fileList = Array.prototype.slice.call(e.dataTransfer.files);
+        Promise.all(fileList.map(function(f) {
+          return readFileAsText(f).then(function(content) { return { name: f.name, content: content }; });
+        })).then(function(fileData) {
+          handleCreateProject(null, fileData);
+        });
+      }
     });
 
-    // "+ New Project" tile — opens folder picker (browse) or accepts
-    // folder drops (drag-drop handler is on the grid itself below).
+    // Fill the grid. Exposed as a closure so changes to filter state can
+    // redraw just the tiles without rebuilding the filter bar (which would
+    // blur whatever input the user is typing into).
+    function redraw() {
+      grid.innerHTML = '';
+      var visible = filteredProjects();
+      visible.forEach(function(project) { grid.appendChild(buildProjectTile(project)); });
+
+      // Don't show the "+ New Project" tile while filters are active —
+      // creating a project with active filters hides it behind the filter.
+      var filtering = filterState.search || filterState.starred ||
+                      filterState.visibility !== 'all' || filterState.ext !== 'all';
+      if (!filtering) grid.appendChild(buildAddProjectTile());
+
+      if (!visible.length) {
+        var empty = document.createElement('div');
+        empty.className = 'go-empty';
+        empty.textContent = filtering
+          ? 'No projects match the current filters.'
+          : 'No projects yet. Drag a folder here or click "+ New Project".';
+        grid.appendChild(empty);
+      }
+
+      footer.textContent = 'Gist Organizer v' + VERSION + ' \u00B7 ' +
+        visible.length + ' of ' + sortedKeys.length + ' project' +
+        (sortedKeys.length !== 1 ? 's' : '');
+    }
+    rerenderTiles = redraw;
+    redraw();
+  }
+
+  function buildProjectTile(project) {
+    var meta = groupMeta[project];
+    var tile = document.createElement('div');
+    tile.className = 'go-tile';
+    var vis = groupVisibility[project] || 'secret';
+    var metaText = meta.files + ' file' + (meta.files !== 1 ? 's' : '');
+    if (meta.time) metaText += ' \u00B7 ' + meta.time;
+    metaText += ' \u00B7 ' + (vis === 'public' ? 'Public' : 'Secret');
+
+    var iconSpan = document.createElement('span');
+    iconSpan.className = 'tile-icon';
+    iconSpan.textContent = '\uD83D\uDCC1';
+    var nameSpan = document.createElement('span');
+    nameSpan.className = 'tile-name';
+    nameSpan.textContent = project;
+    var metaSpan = document.createElement('span');
+    metaSpan.className = 'tile-meta';
+    metaSpan.textContent = metaText;
+    tile.appendChild(iconSpan);
+    tile.appendChild(nameSpan);
+    tile.appendChild(metaSpan);
+
+    if (isProjectStarred(project)) {
+      var star = document.createElement('span');
+      star.className = 'tile-star';
+      star.title = 'Starred';
+      star.textContent = '\u2605';
+      tile.appendChild(star);
+    }
+
+    tile.addEventListener('click', function() { openProject(project); });
+    tile.addEventListener('contextmenu', function(e) {
+      e.preventDefault();
+      var menuItems = [
+        { label: 'Rename', action: function() {
+          startInlineEdit(nameSpan, project, function(newName) {
+            renameProject(project, newName, nameSpan);
+          });
+        }}
+      ];
+      if (groupVisibility[project] !== 'public') {
+        menuItems.push({ label: 'Make Public', action: function() {
+          handleMakeProjectPublic(project);
+        }});
+      }
+      menuItems.push({ label: 'Delete', danger: true, action: function() {
+        handleDeleteProject(project);
+      }});
+      showContextMenu(e.clientX, e.clientY, menuItems);
+    });
+    return tile;
+  }
+
+  function buildAddProjectTile() {
     var addTile = document.createElement('div');
     addTile.className = 'go-tile go-tile-add';
     var addIcon = document.createElement('span');
@@ -1929,51 +2181,112 @@
     });
     addTile.appendChild(folderInput);
     addTile.addEventListener('click', function() { folderInput.click(); });
-    grid.appendChild(addTile);
+    return addTile;
+  }
 
-    // Drag-drop a folder onto the tile grid to create a new project.
-    grid.addEventListener('dragover', function(e) {
-      var types = e.dataTransfer && e.dataTransfer.types;
-      var hasFiles = false;
-      if (types) { for (var i = 0; i < types.length; i++) { if (types[i] === 'Files') { hasFiles = true; break; } } }
-      if (!hasFiles) return;
-      e.preventDefault();
-      e.dataTransfer.dropEffect = 'copy';
-      grid.classList.add('drag-over');
+  function buildFilterBar() {
+    var bar = document.createElement('div');
+    bar.className = 'go-filter-bar' + (filterState.collapsed ? ' collapsed' : '');
+
+    var toggle = document.createElement('button');
+    toggle.className = 'go-filter-toggle';
+    toggle.type = 'button';
+    toggle.innerHTML = '<span class="go-filter-chev"></span><span>Filters</span>';
+    toggle.addEventListener('click', function() {
+      filterState.collapsed = !filterState.collapsed;
+      persistFilterState();
+      bar.classList.toggle('collapsed', filterState.collapsed);
     });
-    grid.addEventListener('dragleave', function(e) {
-      if (!e.relatedTarget || !grid.contains(e.relatedTarget)) {
-        grid.classList.remove('drag-over');
-      }
+    bar.appendChild(toggle);
+
+    var controls = document.createElement('div');
+    controls.className = 'go-filter-controls';
+
+    // Name search
+    var searchWrap = document.createElement('div');
+    searchWrap.className = 'go-filter-search';
+    var search = document.createElement('input');
+    search.type = 'search';
+    search.placeholder = 'Search projects or filenames\u2026';
+    search.value = filterState.search || '';
+    search.addEventListener('input', function() {
+      filterState.search = search.value;
+      persistFilterState();
+      if (rerenderTiles) rerenderTiles();
     });
-    grid.addEventListener('drop', function(e) {
-      e.preventDefault();
-      grid.classList.remove('drag-over');
-      if (!e.dataTransfer) return;
+    searchWrap.appendChild(search);
+    controls.appendChild(searchWrap);
 
-      // Prefer items (supports directories) over files (flat list only).
-      if (e.dataTransfer.items && e.dataTransfer.items.length) {
-        readDroppedItems(e.dataTransfer.items).then(function(result) {
-          if (result.files.length) handleCreateProject(result.folderName, result.files);
-        });
-      } else if (e.dataTransfer.files && e.dataTransfer.files.length) {
-        // Fallback: treat dropped files as a new project (no folder name).
-        var fileList = Array.prototype.slice.call(e.dataTransfer.files);
-        Promise.all(fileList.map(function(f) {
-          return readFileAsText(f).then(function(content) { return { name: f.name, content: content }; });
-        })).then(function(fileData) {
-          handleCreateProject(null, fileData);
-        });
-      }
+    // Visibility
+    var visSel = document.createElement('select');
+    visSel.className = 'go-filter-select';
+    [['all', 'All visibility'], ['public', 'Public only'], ['secret', 'Secret only']].forEach(function(opt) {
+      var o = document.createElement('option');
+      o.value = opt[0]; o.textContent = opt[1]; visSel.appendChild(o);
     });
+    visSel.value = filterState.visibility || 'all';
+    visSel.addEventListener('change', function() {
+      filterState.visibility = visSel.value;
+      persistFilterState();
+      if (rerenderTiles) rerenderTiles();
+    });
+    controls.appendChild(visSel);
 
-    mainPanel.appendChild(grid);
+    // Starred toggle
+    var starLabel = document.createElement('label');
+    starLabel.className = 'go-filter-star';
+    var starCb = document.createElement('input');
+    starCb.type = 'checkbox';
+    starCb.checked = !!filterState.starred;
+    starCb.addEventListener('change', function() {
+      filterState.starred = starCb.checked;
+      persistFilterState();
+      if (rerenderTiles) rerenderTiles();
+    });
+    starLabel.appendChild(starCb);
+    var starGlyph = document.createElement('span');
+    starGlyph.className = 'go-filter-star-glyph';
+    starGlyph.textContent = '\u2605';
+    starLabel.appendChild(starGlyph);
+    starLabel.appendChild(document.createTextNode(' Starred only'));
+    controls.appendChild(starLabel);
 
-    // Footer
-    var footer = document.createElement('div');
-    footer.className = 'go-footer';
-    footer.textContent = 'Gist Organizer v' + VERSION + ' \u00B7 ' + sortedKeys.length + ' projects';
-    mainPanel.appendChild(footer);
+    // File extension
+    var extSel = document.createElement('select');
+    extSel.className = 'go-filter-select';
+    var allExtOpt = document.createElement('option');
+    allExtOpt.value = 'all'; allExtOpt.textContent = 'Any file type';
+    extSel.appendChild(allExtOpt);
+    collectExtensions().forEach(function(ext) {
+      var o = document.createElement('option');
+      o.value = ext; o.textContent = '.' + ext;
+      extSel.appendChild(o);
+    });
+    extSel.value = filterState.ext || 'all';
+    // If the stored extension is no longer present in any project, reset.
+    if (extSel.value !== filterState.ext) { filterState.ext = 'all'; persistFilterState(); }
+    extSel.addEventListener('change', function() {
+      filterState.ext = extSel.value;
+      persistFilterState();
+      if (rerenderTiles) rerenderTiles();
+    });
+    controls.appendChild(extSel);
+
+    // Clear-filters button (only visible when any filter is active)
+    var clearBtn = document.createElement('button');
+    clearBtn.type = 'button';
+    clearBtn.className = 'go-filter-clear';
+    clearBtn.textContent = 'Clear';
+    clearBtn.addEventListener('click', function() {
+      filterState.search = ''; filterState.visibility = 'all';
+      filterState.starred = false; filterState.ext = 'all';
+      persistFilterState();
+      renderBrowse();
+    });
+    controls.appendChild(clearBtn);
+
+    bar.appendChild(controls);
+    return bar;
   }
 
   // --- Render: Project ---
@@ -2331,6 +2644,7 @@
   // --- Start ---
   renderBrowse();
   revealPage();
+  fetchStarredGists(); // populates starredGistIds, then rerenders tiles
   console.log('[GistOrg] v' + VERSION + ' loaded, ' + sortedKeys.length + ' projects');
 
   } // end main()

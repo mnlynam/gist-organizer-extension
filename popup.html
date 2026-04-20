@@ -13,7 +13,32 @@
         <div class="version" id="version"></div>
       </div>
     </div>
-    <p class="desc">Replaces the flat GitHub Gist list with a project-based file explorer.</p>
+
+    <div class="settings">
+      <label class="toggle">
+        <span class="toggle-label">Enable organizer</span>
+        <input type="checkbox" id="enabled" checked>
+        <span class="toggle-switch"></span>
+      </label>
+
+      <div class="field">
+        <label class="field-label" for="defaultVisibility">Default visibility for new projects</label>
+        <select id="defaultVisibility" class="select">
+          <option value="secret">Secret</option>
+          <option value="public">Public</option>
+        </select>
+      </div>
+
+      <div class="field">
+        <label class="field-label" for="defaultSort">Default sort order</label>
+        <select id="defaultSort" class="select">
+          <option value="name">Name (A&ndash;Z)</option>
+          <option value="recent">Last modified</option>
+          <option value="files">File count</option>
+        </select>
+      </div>
+    </div>
+
     <div class="links">
       <a href="https://gist.github.com" target="_blank" class="link">Open Gists</a>
       <a href="https://buymeacoffee.com/matthew81" target="_blank" class="link donate">Buy Me a Coffee</a>
