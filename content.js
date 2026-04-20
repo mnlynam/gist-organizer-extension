@@ -1,9 +1,9 @@
-// Gist Organizer v2.6.0 — Chrome Extension
+// Gist Organizer v2.6.1 — Chrome Extension
 // Replaces the flat GitHub Gist list with a project-based file explorer.
 // https://github.com/mnlynam/gist-organizer-extension
 
 (function () {
-  var VERSION = '2.6.0';
+  var VERSION = '2.6.1';
 
   // hide.css (loaded via manifest at document_start) hides .application-main.
   // revealPage() makes it visible once tiles are built.
@@ -446,10 +446,16 @@
   //     body. Used to add a new file entry without an oid — Rails starts a new
   //     group whenever it sees a key that was already filled in the current
   //     group, so appending name+value with no oid becomes a new file record.
+  //   valueOverrides: Map<Element, string> for substituting MULTIPLE elements
+  //     at once. Used by saveFile() to fill in the content of every file in
+  //     the gist (not just the one being saved) — markdown files render as
+  //     preview by default and their textareas are empty in the parsed HTML,
+  //     so without overrides they'd submit blank and Rails would 422.
   function buildFormBody(form, overrideEl, overrideValue, opts) {
     opts = opts || {};
     var skipEls = opts.skipEls || null;
     var extraFields = opts.extraFields || null;
+    var valueOverrides = opts.valueOverrides || null;
     var parts = [];
     var elements = form.querySelectorAll('input, textarea, select');
     for (var i = 0; i < elements.length; i++) {
@@ -461,7 +467,14 @@
       if (type === 'submit' || type === 'button' || type === 'reset' ||
           type === 'image' || type === 'file') continue;
       if ((type === 'checkbox' || type === 'radio') && !el.checked) continue;
-      var value = (el === overrideEl) ? overrideValue : readElementValue(el);
+      var value;
+      if (el === overrideEl) {
+        value = overrideValue;
+      } else if (valueOverrides && valueOverrides.has(el)) {
+        value = valueOverrides.get(el);
+      } else {
+        value = readElementValue(el);
+      }
       if (value === undefined || value === null) continue;
       parts.push(encodeURIComponent(name) + '=' + encodeURIComponent(value));
     }
@@ -475,11 +488,28 @@
   }
 
   function saveFile(gistId, filename, content) {
+    // Before fetching the edit page, make sure rawCache has the content for
+    // EVERY file in this gist. The edit-page form leaves some textareas blank
+    // (notably markdown files in preview mode) — if we serialize those as
+    // empty, Rails 422s the whole save. We need cached content to override
+    // them at serialization time.
+    var siblingFiles = (fileCache[activeProject] || []).filter(function(f) {
+      return f.gistId === gistId && f.name !== filename;
+    });
+    var missing = siblingFiles.filter(function(f) {
+      return rawCache[gistId + ':' + f.name] === undefined;
+    });
+    var prep = missing.length
+      ? Promise.all(missing.map(function(f) { return fetchRawContent(gistId, f.name); }))
+      : Promise.resolve();
+
     // Always fetch the edit page fresh on save. The page gives us a live <form>
     // with the current CSRF token and oids; reusing cached data risks sending
     // stale oids (the gist may have been edited in another tab) which GitHub
     // rejects with 422.
-    return fetch('/' + pathUser + '/' + gistId + '/edit', { credentials: 'include' })
+    return prep.then(function() {
+      return fetch('/' + pathUser + '/' + gistId + '/edit', { credentials: 'include' });
+    })
       .then(function(res) {
         if (!res.ok) throw new Error('Could not load edit page (HTTP ' + res.status + ')');
         return res.text();
@@ -505,11 +535,22 @@
         // which is what querySelectorAll gives us.
         var nameInputs = form.querySelectorAll('input[name="gist[contents][][name]"]');
         var valueTas = form.querySelectorAll('textarea[name="gist[contents][][value]"]');
+
+        // Walk each (name, value) pair and decide what to substitute:
+        //   - The file being saved → the new content (target)
+        //   - Other files → their cached raw content (so they don't go blank
+        //     and trip Rails' validation, which 422s on empty file values)
         var target = null;
+        var valueOverrides = new Map();
         for (var j = 0; j < nameInputs.length; j++) {
-          if (nameInputs[j].value === filename) {
-            target = valueTas[j] || null;
-            break;
+          var fname = nameInputs[j].value;
+          var ta = valueTas[j];
+          if (!ta) continue;
+          if (fname === filename) {
+            target = ta;
+          } else {
+            var cached = rawCache[gistId + ':' + fname];
+            if (cached !== undefined) valueOverrides.set(ta, cached);
           }
         }
         // Single-file gists may have only one textarea even if the name lookup
@@ -519,7 +560,7 @@
 
         // Substitute the new content at serialization time rather than mutating
         // the parsed DOM — see readElementValue() and buildFormBody() for why.
-        var body = buildFormBody(form, target, content);
+        var body = buildFormBody(form, target, content, { valueOverrides: valueOverrides });
         var action = form.getAttribute('action') || ('/' + pathUser + '/' + gistId);
 
         return fetch(action, {
