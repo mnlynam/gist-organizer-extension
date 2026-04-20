@@ -1,9 +1,9 @@
-// Gist Organizer v2.8.1 — Chrome Extension
+// Gist Organizer v2.8.2 — Chrome Extension
 // Replaces the flat GitHub Gist list with a project-based file explorer.
 // https://github.com/mnlynam/gist-organizer-extension
 
 (function () {
-  var VERSION = '2.8.1';
+  var VERSION = '2.8.2';
 
   // Read user settings from chrome.storage.local before we touch the page.
   // We need the 'enabled' flag early to decide whether to activate at all.
@@ -17,6 +17,18 @@
         settings = Object.assign({}, SETTING_DEFAULTS, s || {});
         resolve(settings);
       });
+    });
+  }
+
+  // Flipping 'enabled' requires a full reload (we can't cleanly tear down or
+  // rebuild the page in place). The in-main() listener handles sort/visibility
+  // changes without reloading.
+  if (chrome && chrome.storage && chrome.storage.onChanged) {
+    chrome.storage.onChanged.addListener(function(changes, area) {
+      if (area !== 'local') return;
+      if (changes.enabled && changes.enabled.newValue !== changes.enabled.oldValue) {
+        window.location.reload();
+      }
     });
   }
 
@@ -491,6 +503,21 @@
 
   // Placeholder; overwritten by renderBrowse after it builds the grid.
   var rerenderTiles = null;
+
+  // Live-apply sort/visibility changes from the popup without reloading.
+  if (chrome && chrome.storage && chrome.storage.onChanged) {
+    chrome.storage.onChanged.addListener(function(changes, area) {
+      if (area !== 'local') return;
+      if (changes.defaultSort && changes.defaultSort.newValue !== settings.defaultSort) {
+        settings.defaultSort = changes.defaultSort.newValue;
+        sortedKeys.sort(projectCompare);
+        if (rerenderTiles && !activeProject) rerenderTiles();
+      }
+      if (changes.defaultVisibility) {
+        settings.defaultVisibility = changes.defaultVisibility.newValue;
+      }
+    });
+  }
 
   // --- Keyboard shortcuts ---
   document.addEventListener('keydown', function(e) {
