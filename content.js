@@ -163,7 +163,9 @@
     // Left panel
     '.go-project-tile { display: flex; align-items: center; gap: 10px; padding: 14px 16px; border-bottom: 1px solid var(--borderColor-default, #30363d); cursor: pointer; }',
     '.go-project-tile:hover { background: var(--bgColor-neutral-muted, #1c2128); }',
-    '.go-project-tile .pt-icon { font-size: 22px; }',
+    '.go-project-tile:hover .pt-icon { background: var(--bgColor-default, #0d1117); border-color: var(--borderColor-muted, #484f58); color: var(--fgColor-default, #e6edf3); }',
+    '.go-project-tile .pt-icon { display: inline-flex; align-items: center; justify-content: center; width: 26px; height: 26px; border-radius: 50%; border: 1px solid var(--borderColor-default, #30363d); background: var(--bgColor-muted, #161b22); color: var(--fgColor-muted, #7d8590); font-size: 14px; line-height: 1; flex-shrink: 0; transition: all 0.15s; }',
+    '.go-project-tile .pt-icon svg { display: block; }',
     '.go-project-tile .pt-name { font-weight: 600; font-size: 13px; color: var(--fgColor-default, #e6edf3); }',
     '.go-project-tile .pt-meta { font-size: 11px; color: var(--fgColor-muted, #7d8590); }',
     '.go-file-nav { list-style: none; margin: 0; padding: 0; }',
@@ -201,7 +203,7 @@
     '.go-context-menu-separator { height: 1px; background: var(--borderColor-default, #30363d); margin: 4px 0; }',
 
     // Content header
-    '.go-content-header { display: flex; align-items: center; justify-content: space-between; padding: 10px 16px; background: var(--bgColor-muted, #161b22); border-bottom: 1px solid var(--borderColor-default, #30363d); flex-shrink: 0; }',
+    '.go-content-header { position: relative; display: flex; align-items: center; justify-content: space-between; padding: 10px 16px; background: var(--bgColor-muted, #161b22); border-bottom: 1px solid var(--borderColor-default, #30363d); flex-shrink: 0; }',
     '.go-content-header .ch-name { font-weight: 600; font-size: 14px; color: var(--fgColor-default, #e6edf3); }',
     '.go-content-header .ch-modified { color: #d29922; margin-left: 6px; }',
     '.go-content-header .ch-actions { display: flex; gap: 8px; }',
@@ -217,6 +219,7 @@
     '.go-status { padding: 8px 16px; font-size: 12px; text-align: center; flex-shrink: 0; }',
     '.go-status.success { background: #1a3a2a; color: #3fb950; }',
     '.go-status.error { background: #3a1a1a; color: #f85149; }',
+    '.go-status.overlay { position: absolute; top: 100%; left: 0; right: 0; z-index: 20; border-bottom: 1px solid var(--borderColor-default, #30363d); }',
 
     // Rendered markdown view
     '.go-rendered { flex: 1; overflow: auto; padding: 24px 32px; }',
@@ -363,11 +366,24 @@
       }
     }
 
-    // Fallback: fetch the edit page (same-origin, has raw content for ALL file types)
+    // Fallback: fetch the edit page (has raw content for files whose
+    // server-rendered textareas are populated).
     return fetchEditPageData(gistId).then(function(editData) {
-      if (editData.fileContents && editData.fileContents[filename]) {
+      if (editData.fileContents && editData.fileContents[filename] !== undefined) {
         rawCache[key] = editData.fileContents[filename];
         return editData.fileContents[filename];
+      }
+      // Final fallback: fetch the raw URL scraped from the gist view page.
+      // Markdown files often have empty edit-page textareas (preview mode) but
+      // still have a working /raw/ URL.
+      if (rawUrl) {
+        return fetch(rawUrl, { credentials: 'include' }).then(function(res) {
+          if (!res.ok) throw new Error('Raw fetch failed (HTTP ' + res.status + ') for ' + filename);
+          return res.text();
+        }).then(function(text) {
+          rawCache[key] = text;
+          return text;
+        });
       }
       throw new Error('Content not found for ' + filename);
     });
@@ -387,28 +403,33 @@
         var description = descEl ? descEl.value : '';
         var fileOids = {};
         var fileContents = {};
-        doc.querySelectorAll('input[name="gist[contents][][oid]"]').forEach(function(oidEl) {
-          var sibling = oidEl;
-          var fileName = null;
-          while (sibling) {
-            if (sibling.getAttribute && sibling.getAttribute('name') === 'gist[contents][][name]') {
-              fileName = sibling.value;
-              fileOids[fileName] = oidEl.value;
-              break;
-            }
-            sibling = sibling.nextElementSibling;
+        // Walk every form element in document order and group by oid anchor.
+        // This keeps per-file name/value association correct even when some
+        // files are missing a textarea in the server-rendered HTML.
+        var allForms = doc.querySelectorAll('form');
+        var editForm = null;
+        for (var fj = 0; fj < allForms.length; fj++) {
+          if (allForms[fj].querySelector('input[name="gist[contents][][oid]"]')) {
+            editForm = allForms[fj];
+            break;
           }
-          // Find the file content from CodeMirror textarea or value field
-          if (fileName) {
-            var fileEditor = oidEl.closest('.file') || oidEl.closest('.js-gist-file-content') || oidEl.parentElement;
-            if (fileEditor) {
-              var contentArea = fileEditor.querySelector('textarea.file-editor-textarea, textarea[name="gist[contents][][value]"], .CodeMirror');
-              if (contentArea && contentArea.value !== undefined) {
-                fileContents[fileName] = contentArea.value;
-              }
+        }
+        if (editForm) {
+          var curTrip = null;
+          var walkEls = editForm.querySelectorAll('input, textarea');
+          for (var wi = 0; wi < walkEls.length; wi++) {
+            var wel = walkEls[wi];
+            var wn = wel.getAttribute('name');
+            if (wn === 'gist[contents][][oid]') {
+              curTrip = { oid: wel.value, name: null };
+            } else if (curTrip && wn === 'gist[contents][][name]' && curTrip.name === null) {
+              curTrip.name = wel.value;
+              fileOids[curTrip.name] = curTrip.oid;
+            } else if (curTrip && wn === 'gist[contents][][value]' && curTrip.name !== null) {
+              if (wel.value) fileContents[curTrip.name] = wel.value;
             }
           }
-        });
+        }
         var data = { csrf: csrf, description: description, fileOids: fileOids, fileContents: fileContents };
         editPageCache[gistId] = data;
         return data;
@@ -530,33 +551,52 @@
         }
         if (!form) throw new Error('Edit form not found on page');
 
-        // Pair name inputs with value textareas by DOM order. Rails' bare "[]"
-        // array syntax means the Nth name input corresponds to the Nth textarea,
-        // which is what querySelectorAll gives us.
-        var nameInputs = form.querySelectorAll('input[name="gist[contents][][name]"]');
-        var valueTas = form.querySelectorAll('textarea[name="gist[contents][][value]"]');
-
-        // Walk each (name, value) pair and decide what to substitute:
-        //   - The file being saved → the new content (target)
-        //   - Other files → their cached raw content (so they don't go blank
-        //     and trip Rails' validation, which 422s on empty file values)
-        var target = null;
-        var valueOverrides = new Map();
-        for (var j = 0; j < nameInputs.length; j++) {
-          var fname = nameInputs[j].value;
-          var ta = valueTas[j];
-          if (!ta) continue;
-          if (fname === filename) {
-            target = ta;
-          } else {
-            var cached = rawCache[gistId + ':' + fname];
-            if (cached !== undefined) valueOverrides.set(ta, cached);
+        // Group the form's per-file inputs into triples anchored on the oid
+        // input. We CANNOT pair name inputs with value textareas by
+        // querySelectorAll index — some files (e.g., markdown in preview mode)
+        // have their textarea missing from the parsed HTML, which misaligns
+        // the two lists and causes saves to overwrite the wrong file.
+        // Instead, walk form elements in document order and attach each
+        // subsequent name/value input to the most recent oid.
+        var fileTriples = [];
+        var current = null;
+        var formEls = form.querySelectorAll('input, textarea');
+        for (var fi = 0; fi < formEls.length; fi++) {
+          var fel = formEls[fi];
+          var fn = fel.getAttribute('name');
+          if (fn === 'gist[contents][][oid]') {
+            if (current) fileTriples.push(current);
+            current = { oid: fel, nameInput: null, valueTa: null };
+          } else if (current && fn === 'gist[contents][][name]' && !current.nameInput) {
+            current.nameInput = fel;
+          } else if (current && fn === 'gist[contents][][value]' && !current.valueTa) {
+            current.valueTa = fel;
           }
         }
-        // Single-file gists may have only one textarea even if the name lookup
-        // fails for some reason; fall back to that.
-        if (!target && valueTas.length === 1) target = valueTas[0];
-        if (!target) throw new Error('Could not locate editor for ' + filename);
+        if (current) fileTriples.push(current);
+
+        // Resolve each file: target gets the new content; others get cached
+        // raw content (needed because Rails 422s on empty file values, and
+        // markdown textareas are often empty in the parsed HTML).
+        var target = null;
+        var valueOverrides = new Map();
+        for (var ti = 0; ti < fileTriples.length; ti++) {
+          var trip = fileTriples[ti];
+          if (!trip.nameInput || !trip.valueTa) continue;
+          var fname = trip.nameInput.value;
+          if (fname === filename) {
+            target = trip.valueTa;
+          } else {
+            var cached = rawCache[gistId + ':' + fname];
+            if (cached === undefined) {
+              // Refuse to save: submitting an empty textarea would either 422
+              // or blank the file. Better to fail loudly than silently corrupt.
+              throw new Error('Cannot save: content for sibling file "' + fname + '" is not cached. Open that file first, then try again.');
+            }
+            valueOverrides.set(trip.valueTa, cached);
+          }
+        }
+        if (!target) throw new Error('Could not locate editor for ' + filename + ' in edit form');
 
         // Substitute the new content at serialization time rather than mutating
         // the parsed DOM — see readElementValue() and buildFormBody() for why.
@@ -1323,6 +1363,45 @@
     });
   }
 
+  // Create an empty file in the active project via prompt. Opens the new
+  // file in the editor on success.
+  function handleCreateFile() {
+    var project = activeProject;
+    if (!project) return;
+    var targetGistId = (activeFile && activeFile.gistId) || (groupGistIds[project] || [])[0];
+    if (!targetGistId) { window.alert('No gist found for this project'); return; }
+
+    var existingNames = (fileCache[project] || []).map(function(f) { return f.name; });
+    var filename = window.prompt('Name for new file (e.g. notes.md):', '');
+    if (filename === null) return;
+    filename = (filename || '').trim();
+    if (!filename) return;
+    if (existingNames.indexOf(filename) !== -1) {
+      window.alert('A file named "' + filename + '" already exists in this project.');
+      return;
+    }
+
+    addFileToGist(targetGistId, filename, '').then(function() {
+      var newFile = {
+        name: filename,
+        gistId: targetGistId,
+        rawText: '',
+        rawUrl: null,
+        renderedHtml: ''
+      };
+      if (fileCache[project]) fileCache[project].push(newFile);
+      if (groupMeta[project]) groupMeta[project].files += 1;
+      rawCache[targetGistId + ':' + filename] = '';
+      if (activeProject === project) {
+        openFile(newFile);
+        flashStatus('\u2713 Created ' + filename);
+      }
+    }).catch(function(err) {
+      console.warn('[GistOrg] Create file failed', err);
+      flashStatus('Create failed: ' + (err && err.message ? err.message : 'unknown error'), 'error');
+    });
+  }
+
   // --- Create new project ---
 
   // High-level handler: given a folder name and an array of {name, content},
@@ -1629,7 +1708,8 @@
     pt.className = 'go-project-tile';
     var ptIcon = document.createElement('span');
     ptIcon.className = 'pt-icon';
-    ptIcon.textContent = '\u2190';
+    ptIcon.setAttribute('aria-label', 'Back');
+    ptIcon.innerHTML = '<svg width="12" height="12" viewBox="0 0 12 12" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><polyline points="7.5,2.5 3.5,6 7.5,9.5"/></svg>';
     var ptText = document.createElement('div');
     var ptName = document.createElement('div');
     ptName.className = 'pt-name';
@@ -1644,9 +1724,10 @@
     pt.addEventListener('click', function() { if (confirmDiscard()) renderBrowse(); });
     leftPanel.appendChild(pt);
 
-    // Add-file row: click to browse, or users can drag-drop files onto the
-    // panel. The hidden file input is rebuilt on every left-panel render, but
-    // that's fine — it only exists to trigger the native file picker.
+    // Add-file row: click shows a menu with "New file" (empty in-browser) or
+    // "Upload file" (native file picker). Users can also drag-drop files onto
+    // the panel. The hidden file input is rebuilt on every left-panel render,
+    // but that's fine — it only exists to trigger the native file picker.
     var addRow = document.createElement('div');
     addRow.className = 'go-add-file';
     var addIcon = document.createElement('span');
@@ -1666,7 +1747,14 @@
       fileInput.value = '';
     });
     addRow.appendChild(fileInput);
-    addRow.addEventListener('click', function() { fileInput.click(); });
+    addRow.addEventListener('click', function(e) {
+      var rect = addRow.getBoundingClientRect();
+      showContextMenu(rect.left, rect.bottom, [
+        { label: 'New file\u2026', action: function() { handleCreateFile(); } },
+        { label: 'Upload file\u2026', action: function() { fileInput.click(); } }
+      ]);
+      e.stopPropagation();
+    });
     leftPanel.appendChild(addRow);
 
     var files = fileCache[activeProject] || [];
@@ -2107,7 +2195,12 @@
 
     var editorArea = document.createElement('div');
     editorArea.className = 'go-editor-area';
-    editorArea.innerHTML = '<div class="go-loading">Loading ' + file.name + '\u2026</div>';
+    var cacheKey = file.gistId + ':' + file.name;
+    var cachedRaw = Object.prototype.hasOwnProperty.call(rawCache, cacheKey);
+    var cachedEdit = Object.prototype.hasOwnProperty.call(editPageCache, file.gistId);
+    if (!(cachedRaw && cachedEdit)) {
+      editorArea.innerHTML = '<div class="go-loading">Loading ' + file.name + '\u2026</div>';
+    }
     mainPanel.appendChild(editorArea);
 
     // Fetch raw content and edit page data in parallel
@@ -2127,9 +2220,9 @@
 
         saveFile(file.gistId, file.name, content).then(function() {
           var status = document.createElement('div');
-          status.className = 'go-status success';
+          status.className = 'go-status success overlay';
           status.textContent = '\u2713 Saved';
-          mainPanel.insertBefore(status, editorArea);
+          header.appendChild(status);
           setTimeout(function() { if (status.parentNode) status.remove(); }, 2000);
           original = content;
           saveBtn.textContent = 'Save';
@@ -2137,9 +2230,9 @@
           saveBtn.disabled = true;
         }).catch(function(err) {
           var status = document.createElement('div');
-          status.className = 'go-status error';
+          status.className = 'go-status error overlay';
           status.textContent = 'Save failed: ' + err.message;
-          mainPanel.insertBefore(status, editorArea);
+          header.appendChild(status);
           setTimeout(function() { if (status.parentNode) status.remove(); }, 5000);
           saveBtn.textContent = 'Save';
           saveBtn.disabled = false;
