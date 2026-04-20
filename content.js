@@ -1,9 +1,9 @@
-// Gist Organizer v2.8.3 — Chrome Extension
+// Gist Organizer v2.8.4 — Chrome Extension
 // Replaces the flat GitHub Gist list with a project-based file explorer.
 // https://github.com/mnlynam/gist-organizer-extension
 
 (function () {
-  var VERSION = '2.8.3';
+  var VERSION = '2.8.4';
 
   // Read user settings from chrome.storage.local before we touch the page.
   // We need the 'enabled' flag early to decide whether to activate at all.
@@ -1775,28 +1775,33 @@
       });
   }
 
-  // Star or unstar a gist. Uses the same form-based POST that GitHub's
-  // star/unstar buttons send: multipart body with authenticity_token + context=gist.
-  // Star posts to /{gistId}/star, unstar posts to /{gistId}/unstar.
+  // Star or unstar a gist. Rails uses per_form_csrf_tokens on this endpoint,
+  // so we must extract the authenticity_token from the specific star/unstar
+  // form rather than using a global CSRF meta tag. The form is rendered on
+  // the gist page itself and reflects the current starred state.
   function toggleStarGist(gistId, star) {
-    return fetch('/' + pathUser + '/' + gistId + '/stargazers', { credentials: 'include' })
+    var action = star ? '/star' : '/unstar';
+    return fetch('/' + pathUser + '/' + gistId, { credentials: 'include' })
       .then(function(res) {
         if (!res.ok) throw new Error('Could not load gist page (HTTP ' + res.status + ')');
         return res.text();
       })
       .then(function(html) {
         var doc = new DOMParser().parseFromString(html, 'text/html');
-        var csrf = '';
-        var csrfEl = doc.querySelector('input[name="authenticity_token"]') ||
-                     doc.querySelector('meta[name="csrf-token"]');
-        if (csrfEl) csrf = csrfEl.value || csrfEl.getAttribute('content') || '';
-        if (!csrf) throw new Error('Could not find CSRF token');
+        var formSelector = 'form[action$="' + action + '"]';
+        var form = doc.querySelector(formSelector);
+        if (!form) {
+          throw new Error('Gist is already ' + (star ? 'starred' : 'unstarred'));
+        }
+        var csrfEl = form.querySelector('input[name="authenticity_token"]');
+        var csrf = csrfEl ? (csrfEl.value || csrfEl.getAttribute('value') || '') : '';
+        if (!csrf) throw new Error('Could not find CSRF token in star form');
 
         var fd = new FormData();
         fd.append('authenticity_token', csrf);
         fd.append('context', 'gist');
 
-        return fetch('/' + pathUser + '/' + gistId + (star ? '/star' : '/unstar'), {
+        return fetch('/' + pathUser + '/' + gistId + action, {
           method: 'POST',
           headers: {
             'Accept': 'application/json',
