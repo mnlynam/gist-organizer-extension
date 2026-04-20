@@ -1,9 +1,9 @@
-// Gist Organizer v2.8.4 — Chrome Extension
+// Gist Organizer v2.8.5 — Chrome Extension
 // Replaces the flat GitHub Gist list with a project-based file explorer.
 // https://github.com/mnlynam/gist-organizer-extension
 
 (function () {
-  var VERSION = '2.8.4';
+  var VERSION = '2.8.5';
 
   // Read user settings from chrome.storage.local before we touch the page.
   // We need the 'enabled' flag early to decide whether to activate at all.
@@ -1823,8 +1823,6 @@
     if (!gistIds.length) return;
 
     var isStarred = isProjectStarred(projectName);
-    var action = isStarred ? 'Unstarring' : 'Starring';
-    flashStatus(action + ' "' + projectName + '"\u2026');
 
     Promise.all(gistIds.map(function(gistId) {
       return toggleStarGist(gistId, !isStarred);
