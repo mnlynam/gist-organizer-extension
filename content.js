@@ -1748,10 +1748,11 @@
       });
   }
 
-  // Star or unstar a gist. GitHub's gist star endpoint uses PUT to star and
-  // DELETE to unstar, both at /{user}/{gistId}/star with a CSRF token.
+  // Star or unstar a gist. Uses the same form-based POST that GitHub's
+  // star button sends: multipart body with authenticity_token + context=gist.
+  // For unstar, adds _method=delete to the form data.
   function toggleStarGist(gistId, star) {
-    return fetch('/' + pathUser + '/' + gistId, { credentials: 'include' })
+    return fetch('/' + pathUser + '/' + gistId + '/stargazers', { credentials: 'include' })
       .then(function(res) {
         if (!res.ok) throw new Error('Could not load gist page (HTTP ' + res.status + ')');
         return res.text();
@@ -1764,17 +1765,19 @@
         if (csrfEl) csrf = csrfEl.value || csrfEl.getAttribute('content') || '';
         if (!csrf) throw new Error('Could not find CSRF token');
 
-        var body = 'authenticity_token=' + encodeURIComponent(csrf);
+        var fd = new FormData();
+        fd.append('authenticity_token', csrf);
+        fd.append('context', 'gist');
+        if (!star) fd.append('_method', 'delete');
 
         return fetch('/' + pathUser + '/' + gistId + '/star', {
-          method: star ? 'PUT' : 'DELETE',
+          method: 'POST',
           headers: {
-            'Content-Type': 'application/x-www-form-urlencoded',
-            'Accept': 'text/html, application/xhtml+xml'
+            'Accept': 'application/json',
+            'X-Requested-With': 'XMLHttpRequest'
           },
           credentials: 'include',
-          body: body,
-          redirect: 'follow'
+          body: fd
         });
       })
       .then(function(res) {
