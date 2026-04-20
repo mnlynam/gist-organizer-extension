@@ -35,7 +35,14 @@ A Chrome extension that replaces the flat GitHub Gist list with a project-based 
 - **Toolbar popup** — quick access to enable/disable, default visibility, and default sort order
 - **Default sort order** — Name (A–Z), Last modified, or File count
 - **Default visibility** — Secret or Public for newly-created projects
+- **Live settings** — toggling the organizer on/off or changing the sort order applies immediately, no reload needed
 - **One-click disable** — turn the organizer off to see GitHub's native gist page
+
+### Layout
+- **Responsive grid** — tile count adjusts automatically to the window width
+- **Compact mobile view** — smaller tiles and tighter spacing below 600px
+- **Wide-screen view** — larger tiles on displays above 1400px
+- **Flexible filter bar** — controls wrap cleanly on narrow viewports
 
 ### Performance
 - **Background preloading** — when you open a project, all file contents are preloaded in the background so switching between files is instant
