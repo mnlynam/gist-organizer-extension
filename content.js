@@ -1,9 +1,9 @@
-// Gist Organizer v2.7.0 — Chrome Extension
+// Gist Organizer v2.8.0 — Chrome Extension
 // Replaces the flat GitHub Gist list with a project-based file explorer.
 // https://github.com/mnlynam/gist-organizer-extension
 
 (function () {
-  var VERSION = '2.7.0';
+  var VERSION = '2.8.0';
 
   // Read user settings from chrome.storage.local before we touch the page.
   // We need the 'enabled' flag early to decide whether to activate at all.
@@ -1745,6 +1745,68 @@
       });
   }
 
+  // Star or unstar a gist. GitHub's gist star endpoint uses PUT to star and
+  // DELETE to unstar, both at /{user}/{gistId}/star with a CSRF token.
+  function toggleStarGist(gistId, star) {
+    return fetch('/' + pathUser + '/' + gistId, { credentials: 'include' })
+      .then(function(res) {
+        if (!res.ok) throw new Error('Could not load gist page (HTTP ' + res.status + ')');
+        return res.text();
+      })
+      .then(function(html) {
+        var doc = new DOMParser().parseFromString(html, 'text/html');
+        var csrf = '';
+        var csrfEl = doc.querySelector('input[name="authenticity_token"]') ||
+                     doc.querySelector('meta[name="csrf-token"]');
+        if (csrfEl) csrf = csrfEl.value || csrfEl.getAttribute('content') || '';
+        if (!csrf) throw new Error('Could not find CSRF token');
+
+        var body = 'authenticity_token=' + encodeURIComponent(csrf);
+
+        return fetch('/' + pathUser + '/' + gistId + '/star', {
+          method: star ? 'PUT' : 'DELETE',
+          headers: {
+            'Content-Type': 'application/x-www-form-urlencoded',
+            'Accept': 'text/html, application/xhtml+xml'
+          },
+          credentials: 'include',
+          body: body,
+          redirect: 'follow'
+        });
+      })
+      .then(function(res) {
+        if (!res.ok && res.status !== 302 && res.status !== 303 && res.status !== 204) {
+          throw new Error('HTTP ' + res.status);
+        }
+      });
+  }
+
+  function handleToggleStar(projectName) {
+    var gistIds = (groupGistIds[projectName] || []).slice();
+    if (!gistIds.length) return;
+
+    var isStarred = isProjectStarred(projectName);
+    var action = isStarred ? 'Unstarring' : 'Starring';
+    flashStatus(action + ' "' + projectName + '"\u2026');
+
+    Promise.all(gistIds.map(function(gistId) {
+      return toggleStarGist(gistId, !isStarred);
+    })).then(function() {
+      gistIds.forEach(function(gistId) {
+        if (isStarred) {
+          delete starredGistIds[gistId];
+        } else {
+          starredGistIds[gistId] = true;
+        }
+      });
+      if (rerenderTiles) rerenderTiles();
+      flashStatus('\u2713 ' + (isStarred ? 'Unstarred' : 'Starred') + ' "' + projectName + '"');
+    }).catch(function(err) {
+      console.warn('[GistOrg] Star toggle failed:', err);
+      window.alert((isStarred ? 'Unstar' : 'Star') + ' failed: ' + (err && err.message ? err.message : 'unknown error'));
+    });
+  }
+
   // Make all gists in a project public. Shows a warning about irreversibility.
   function handleMakeProjectPublic(projectName) {
     var gistIds = (groupGistIds[projectName] || []).slice();
@@ -2137,7 +2199,11 @@
     tile.addEventListener('click', function() { openProject(project); });
     tile.addEventListener('contextmenu', function(e) {
       e.preventDefault();
+      var starred = isProjectStarred(project);
       var menuItems = [
+        { label: starred ? 'Unstar' : 'Star', action: function() {
+          handleToggleStar(project);
+        }},
         { label: 'Rename', action: function() {
           startInlineEdit(nameSpan, project, function(newName) {
             renameProject(project, newName, nameSpan);
