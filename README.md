@@ -1,18 +1,34 @@
 # Gist Organizer
 
-A Chrome extension that replaces the flat GitHub Gist list with a project-based file explorer. Each gist becomes a project tile, and clicking it opens a left-panel file navigator with a syntax-highlighted code editor.
+A Chrome extension that replaces the flat GitHub Gist list with a project-based file explorer and syntax-highlighted editor. Organize gists into projects, manage files with drag-and-drop, and edit code with full syntax highlighting — all without leaving GitHub.
 
 ## Features
 
+### Browse & Organize
 - **Project tiles** — gists displayed as a clean tile grid, grouped by description
 - **File explorer layout** — left-panel file tree with a full code editor
+- **Public/secret visibility** — see which projects are public or secret at a glance
+- **Works for any user** — visit any `gist.github.com/{user}` page
+
+### Edit & Save
 - **Syntax-highlighted editor** — CodeMirror with dark theme, line numbers, bracket matching
 - **Markdown rendering** — `.md` files show rendered HTML by default with an Edit button
 - **Inline saving** — saves directly to GitHub using the native gist form mechanism
 - **Unsaved changes protection** — dot indicator, confirmation prompts, browser unload warning
 - **Keyboard shortcuts** — Ctrl+S to save, Escape to go back
+
+### File & Project Management
+- **Add files** — drag-and-drop files or use the "+ Add file" button to add files to any project
+- **Delete files** — remove individual files from a project via the right-click context menu
+- **Create projects** — drag-and-drop a folder onto the tile grid or use "+ New Project" to create a new gist project
+- **Delete projects** — remove entire projects via the right-click context menu on tiles
+- **Make projects public** — convert secret gists to public from the context menu
+- **Rename projects** — right-click any project tile to rename it
+
+### Performance
+- **Background preloading** — when you open a project, all file contents are preloaded in the background so switching between files is instant
+- **Progress indicator** — shows file-by-file loading progress as content is fetched
 - **Zero-flicker** — hides original page before it renders
-- **Works for any user** — visit any `gist.github.com/{user}` page
 
 ## How grouping works
 
