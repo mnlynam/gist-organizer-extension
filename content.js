@@ -1,9 +1,9 @@
-// Gist Organizer v2.8.2 — Chrome Extension
+// Gist Organizer v2.8.3 — Chrome Extension
 // Replaces the flat GitHub Gist list with a project-based file explorer.
 // https://github.com/mnlynam/gist-organizer-extension
 
 (function () {
-  var VERSION = '2.8.2';
+  var VERSION = '2.8.3';
 
   // Read user settings from chrome.storage.local before we touch the page.
   // We need the 'enabled' flag early to decide whether to activate at all.
@@ -1776,8 +1776,8 @@
   }
 
   // Star or unstar a gist. Uses the same form-based POST that GitHub's
-  // star button sends: multipart body with authenticity_token + context=gist.
-  // For unstar, adds _method=delete to the form data.
+  // star/unstar buttons send: multipart body with authenticity_token + context=gist.
+  // Star posts to /{gistId}/star, unstar posts to /{gistId}/unstar.
   function toggleStarGist(gistId, star) {
     return fetch('/' + pathUser + '/' + gistId + '/stargazers', { credentials: 'include' })
       .then(function(res) {
@@ -1795,9 +1795,8 @@
         var fd = new FormData();
         fd.append('authenticity_token', csrf);
         fd.append('context', 'gist');
-        if (!star) fd.append('_method', 'delete');
 
-        return fetch('/' + pathUser + '/' + gistId + '/star', {
+        return fetch('/' + pathUser + '/' + gistId + (star ? '/star' : '/unstar'), {
           method: 'POST',
           headers: {
             'Accept': 'application/json',
