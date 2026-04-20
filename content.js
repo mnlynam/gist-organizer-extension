@@ -204,7 +204,10 @@
     '.go-tile-add { border-style: dashed; opacity: 0.6; }',
     '.go-tile-add:hover { opacity: 1; }',
     '.go-tile-add .tile-icon { font-size: 28px; color: var(--fgColor-accent, #4493f8); }',
-    '.go-tile .tile-star { position: absolute; top: 8px; right: 10px; color: #d4a72c; font-size: 14px; line-height: 1; text-shadow: 0 1px 2px rgba(0,0,0,0.4); }',
+    '.go-tile .tile-star { position: absolute; top: 6px; right: 8px; font-size: 16px; line-height: 1; padding: 4px; border-radius: 4px; cursor: pointer; background: transparent; border: none; color: var(--fgColor-muted, #7d8590); opacity: 0; transition: opacity 0.15s, color 0.15s, background 0.15s; }',
+    '.go-tile:hover .tile-star { opacity: 1; }',
+    '.go-tile .tile-star.starred { opacity: 1; color: #d4a72c; text-shadow: 0 1px 2px rgba(0,0,0,0.4); }',
+    '.go-tile .tile-star:hover { background: var(--bgColor-neutral-muted, rgba(110,118,129,0.2)); color: #d4a72c; }',
     '.go-tiles.drag-over { outline: 2px dashed var(--borderColor-accent-emphasis, #1f6feb); outline-offset: -2px; border-radius: 8px; background: var(--bgColor-accent-muted, #121d2f); }',
     '.go-empty { grid-column: 1 / -1; padding: 40px 20px; text-align: center; font-size: 13px; color: var(--fgColor-muted, #7d8590); }',
 
@@ -2188,13 +2191,16 @@
     tile.appendChild(nameSpan);
     tile.appendChild(metaSpan);
 
-    if (isProjectStarred(project)) {
-      var star = document.createElement('span');
-      star.className = 'tile-star';
-      star.title = 'Starred';
-      star.textContent = '\u2605';
-      tile.appendChild(star);
-    }
+    var star = document.createElement('button');
+    var starred = isProjectStarred(project);
+    star.className = 'tile-star' + (starred ? ' starred' : '');
+    star.title = starred ? 'Unstar project' : 'Star project';
+    star.textContent = starred ? '\u2605' : '\u2606';
+    star.addEventListener('click', function(e) {
+      e.stopPropagation();
+      handleToggleStar(project);
+    });
+    tile.appendChild(star);
 
     tile.addEventListener('click', function() { openProject(project); });
     tile.addEventListener('contextmenu', function(e) {
