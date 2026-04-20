@@ -204,9 +204,13 @@
 
     // Content header
     '.go-content-header { position: relative; display: flex; align-items: center; justify-content: space-between; padding: 10px 16px; background: var(--bgColor-muted, #161b22); border-bottom: 1px solid var(--borderColor-default, #30363d); flex-shrink: 0; }',
-    '.go-content-header .ch-name { font-weight: 600; font-size: 14px; color: var(--fgColor-default, #e6edf3); }',
+    '.go-content-header .ch-name { font-weight: 600; font-size: 14px; color: var(--fgColor-default, #e6edf3); flex-shrink: 0; }',
     '.go-content-header .ch-modified { color: #d29922; margin-left: 6px; }',
-    '.go-content-header .ch-actions { display: flex; gap: 8px; }',
+    '.go-content-header .ch-status { flex: 1; min-width: 0; margin: 0 12px; font-size: 12px; opacity: 0; transition: opacity 0.2s; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }',
+    '.go-content-header .ch-status.visible { opacity: 1; }',
+    '.go-content-header .ch-status.success { color: #3fb950; }',
+    '.go-content-header .ch-status.error { color: #f85149; }',
+    '.go-content-header .ch-actions { display: flex; gap: 8px; flex-shrink: 0; }',
     '.go-btn { padding: 5px 12px; border-radius: 6px; font-size: 12px; font-weight: 500; cursor: pointer; border: 1px solid var(--borderColor-default, #30363d); background: var(--bgColor-default, #0d1117); color: var(--fgColor-default, #e6edf3); transition: all 0.15s; }',
     '.go-btn:hover { background: var(--bgColor-neutral-muted, #1c2128); }',
     '.go-btn-primary { background: #238636; border-color: #238636; color: #fff; }',
@@ -219,7 +223,6 @@
     '.go-status { padding: 8px 16px; font-size: 12px; text-align: center; flex-shrink: 0; }',
     '.go-status.success { background: #1a3a2a; color: #3fb950; }',
     '.go-status.error { background: #3a1a1a; color: #f85149; }',
-    '.go-status.overlay { position: absolute; top: 100%; left: 0; right: 0; z-index: 20; border-bottom: 1px solid var(--borderColor-default, #30363d); }',
 
     // Rendered markdown view
     '.go-rendered { flex: 1; overflow: auto; padding: 24px 32px; }',
@@ -2160,6 +2163,8 @@
     var nameSpan = document.createElement('span');
     nameSpan.className = 'ch-name';
     nameSpan.innerHTML = file.name + '<span class="ch-modified" style="display:none;"> \u25CF</span>';
+    var statusSpan = document.createElement('span');
+    statusSpan.className = 'ch-status';
     var actions = document.createElement('div');
     actions.className = 'ch-actions';
 
@@ -2190,8 +2195,20 @@
     actions.appendChild(openBtn);
     actions.appendChild(saveBtn);
     header.appendChild(nameSpan);
+    header.appendChild(statusSpan);
     header.appendChild(actions);
     mainPanel.appendChild(header);
+
+    function showSaveStatus(msg, kind) {
+      statusSpan.textContent = msg;
+      statusSpan.className = 'ch-status ' + (kind || '') + ' visible';
+      if (statusSpan._clearTimer) clearTimeout(statusSpan._clearTimer);
+      var ttl = kind === 'error' ? 5000 : 2000;
+      statusSpan._clearTimer = setTimeout(function() {
+        statusSpan.className = 'ch-status';
+        statusSpan.textContent = '';
+      }, ttl);
+    }
 
     var editorArea = document.createElement('div');
     editorArea.className = 'go-editor-area';
@@ -2219,21 +2236,13 @@
         var content = getValue();
 
         saveFile(file.gistId, file.name, content).then(function() {
-          var status = document.createElement('div');
-          status.className = 'go-status success overlay';
-          status.textContent = '\u2713 Saved';
-          header.appendChild(status);
-          setTimeout(function() { if (status.parentNode) status.remove(); }, 2000);
+          showSaveStatus('\u2713 Saved', 'success');
           original = content;
           saveBtn.textContent = 'Save';
           setModified(false);
           saveBtn.disabled = true;
         }).catch(function(err) {
-          var status = document.createElement('div');
-          status.className = 'go-status error overlay';
-          status.textContent = 'Save failed: ' + err.message;
-          header.appendChild(status);
-          setTimeout(function() { if (status.parentNode) status.remove(); }, 5000);
+          showSaveStatus('Save failed: ' + err.message, 'error');
           saveBtn.textContent = 'Save';
           saveBtn.disabled = false;
         });
