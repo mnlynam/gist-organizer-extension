@@ -1,9 +1,9 @@
-// Gist Organizer v2.8.5 — Chrome Extension
+// Gist Organizer v2.8.6 — Chrome Extension
 // Replaces the flat GitHub Gist list with a project-based file explorer.
 // https://github.com/mnlynam/gist-organizer-extension
 
 (function () {
-  var VERSION = '2.8.5';
+  var VERSION = '2.8.6';
 
   // Read user settings from chrome.storage.local before we touch the page.
   // We need the 'enabled' flag early to decide whether to activate at all.
@@ -205,8 +205,8 @@
     '.go-container.has-left .go-left { display: block; }',
 
     // Tiles
-    '.go-tiles { display: grid; grid-template-columns: repeat(auto-fill, minmax(160px, 1fr)); gap: 16px; padding: 20px; }',
-    '.go-tile { position: relative; aspect-ratio: 1; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 8px; background: var(--bgColor-default, #0d1117); border: 1px solid var(--borderColor-default, #30363d); border-radius: 10px; cursor: pointer; user-select: none; transition: all 0.15s; padding: 16px 12px; text-align: center; }',
+    '.go-tiles { display: grid; grid-template-columns: repeat(auto-fill, minmax(180px, 1fr)); gap: 16px; padding: 20px; }',
+    '.go-tile { position: relative; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 8px; background: var(--bgColor-default, #0d1117); border: 1px solid var(--borderColor-default, #30363d); border-radius: 10px; cursor: pointer; user-select: none; transition: all 0.15s; padding: 24px 12px 16px; text-align: center; }',
     '.go-tile:hover { border-color: var(--borderColor-accent-emphasis, #1f6feb); transform: translateY(-2px); box-shadow: 0 4px 12px rgba(0,0,0,0.3); }',
     '.go-tile .tile-icon { font-size: 32px; line-height: 1; }',
     '.go-tile .tile-name { font-weight: 600; font-size: 12px; color: var(--fgColor-default, #e6edf3); line-height: 1.3; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; padding: 1px 4px; border-radius: 3px; }',
@@ -320,7 +320,11 @@
     '.go-cm-wrap .CodeMirror-linenumber { padding: 0 8px 0 12px; min-width: 28px; }',
 
     // Textarea fallback
-    '.go-editor { width: 100%; flex: 1; padding: 12px 16px; font-family: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace; font-size: 13px; line-height: 1.5; background: var(--bgColor-default, #0d1117); color: var(--fgColor-default, #e6edf3); border: none; resize: none; outline: none; tab-size: 2; }'
+    '.go-editor { width: 100%; flex: 1; padding: 12px 16px; font-family: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace; font-size: 13px; line-height: 1.5; background: var(--bgColor-default, #0d1117); color: var(--fgColor-default, #e6edf3); border: none; resize: none; outline: none; tab-size: 2; }',
+
+    // Responsive
+    '@media (max-width: 600px) { .go-tiles { grid-template-columns: repeat(auto-fill, minmax(140px, 1fr)); gap: 10px; padding: 12px; } .go-filter-bar { padding: 10px 12px 0; } .go-filter-controls { gap: 6px; } .go-filter-search { min-width: 120px; } .go-left { width: 200px; } .go-rendered { padding: 16px; } }',
+    '@media (min-width: 1400px) { .go-tiles { grid-template-columns: repeat(auto-fill, minmax(200px, 1fr)); } }'
   ].join('\n');
   document.head.appendChild(style);
 
