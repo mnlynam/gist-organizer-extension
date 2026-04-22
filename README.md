@@ -10,7 +10,7 @@ A Chrome extension that replaces the flat GitHub Gist list with a project-based 
 - **Public/secret visibility** — see which projects are public or secret at a glance
 - **Star projects** — click the star on any tile to star/unstar all gists in the project
 - **Starred indicator** — starred projects show a gold star in the tile corner
-- **Filter bar** — search by name, filter by visibility/starred/file type, collapsible
+- **Filter bar** — search by name, filter by visibility/starred, collapsible
 - **Works for any user** — visit any `gist.github.com/{user}` page
 
 ### Edit & Save
@@ -25,6 +25,7 @@ A Chrome extension that replaces the flat GitHub Gist list with a project-based 
 - **Create files in-browser** — add a new empty file with "+ New file..." directly from the file panel
 - **Upload files** — drag-and-drop files or use "+ Upload file..." to add existing files
 - **Delete files** — remove individual files from a project via the right-click context menu
+- **Filter files by type** — when a project has multiple extensions, a dropdown in the left panel narrows the file list; the open file stays pinned at the top if it doesn't match
 - **Create projects** — drag-and-drop a folder onto the tile grid or use "+ New Project" to create a new gist project
 - **Delete projects** — remove entire projects via the right-click context menu on tiles
 - **Make projects public** — convert secret gists to public from the context menu

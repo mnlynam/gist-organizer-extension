@@ -3,7 +3,7 @@
 // https://github.com/mnlynam/gist-organizer-extension
 
 (function () {
-  var VERSION = '2.8.6';
+  var VERSION = '2.8.8';
 
   // Read user settings from chrome.storage.local before we touch the page.
   // We need the 'enabled' flag early to decide whether to activate at all.
@@ -236,6 +236,7 @@
     '.go-filter-search input { width: 100%; padding: 6px 10px; font-size: 13px; background: var(--bgColor-default, #0d1117); color: var(--fgColor-default, #e6edf3); border: 1px solid var(--borderColor-default, #30363d); border-radius: 6px; outline: none; }',
     '.go-filter-search input:focus { border-color: var(--borderColor-accent-emphasis, #1f6feb); }',
     '.go-filter-select { padding: 6px 28px 6px 10px; font-size: 13px; background: var(--bgColor-default, #0d1117); color: var(--fgColor-default, #e6edf3); border: 1px solid var(--borderColor-default, #30363d); border-radius: 6px; cursor: pointer; outline: none; appearance: none; background-image: url("data:image/svg+xml;utf8,<svg xmlns=\'http://www.w3.org/2000/svg\' width=\'10\' height=\'6\' viewBox=\'0 0 10 6\'><path fill=\'none\' stroke=\'%237d8590\' stroke-width=\'1.5\' stroke-linecap=\'round\' d=\'M1 1l4 4 4-4\'/></svg>"); background-repeat: no-repeat; background-position: right 10px center; }',
+    '.go-file-filter { display: block; margin: 8px 16px; width: calc(100% - 32px); box-sizing: border-box; font-size: 12px; padding: 5px 26px 5px 8px; }',
     '.go-filter-star { display: inline-flex; align-items: center; gap: 6px; font-size: 13px; cursor: pointer; user-select: none; color: var(--fgColor-default, #e6edf3); padding: 6px 10px; background: var(--bgColor-default, #0d1117); border: 1px solid var(--borderColor-default, #30363d); border-radius: 6px; }',
     '.go-filter-star input { margin: 0; }',
     '.go-filter-star-glyph { color: #d4a72c; }',
@@ -262,6 +263,7 @@
     '.go-file-nav li.active .fn-name { cursor: text; }',
     '.go-file-nav li .fn-name.editing { overflow: visible; text-overflow: clip; white-space: normal; word-break: break-all; background: var(--bgColor-default, #0d1117); color: var(--fgColor-default, #e6edf3); outline: 2px solid var(--borderColor-accent-emphasis, #1f6feb); user-select: text; }',
     '.go-file-nav li .fn-name.saving { opacity: 0.5; }',
+    '.go-file-nav li .fn-hint { font-size: 11px; color: var(--fgColor-muted, #7d8590); flex-shrink: 0; }',
     '.go-file-nav li .fn-modified { width: 6px; height: 6px; border-radius: 50%; background: #d29922; margin-left: auto; flex-shrink: 0; }',
 
     // Preload progress bar (bottom of left panel)
@@ -386,13 +388,14 @@
   var preloadState = null; // { project, total, loaded, el } — active while preloading
   var starredGistIds = {}; // gistId -> true, populated async from /{user}/starred
   var starredLoaded = false;
+  var projectFileExt = 'all'; // per-project file-type filter, reset on project open/close
 
   // Filter state persists per-origin so a return visit keeps the same view.
   var FILTER_STORAGE_KEY = 'gistOrganizer.filters.v1';
   var filterState = loadFilterState();
 
   function loadFilterState() {
-    var defaults = { collapsed: false, search: '', visibility: 'all', starred: false, ext: 'all' };
+    var defaults = { collapsed: false, search: '', visibility: 'all', starred: false };
     try {
       var raw = localStorage.getItem(FILTER_STORAGE_KEY);
       if (!raw) return defaults;
@@ -441,44 +444,16 @@
     return false;
   }
 
-  // Collect all unique file extensions across known projects so the filter
-  // dropdown can offer real choices. Uses fileCache when a project has been
-  // opened, or derives from the snippet metadata otherwise.
-  function collectExtensions() {
+  // Unique file extensions in a single opened project. Drives the file-type
+  // filter shown in the left panel.
+  function collectProjectExtensions(project) {
     var exts = {};
-    Object.keys(groups).forEach(function(project) {
-      var files = fileCache[project];
-      if (files && files.length) {
-        files.forEach(function(f) {
-          var dot = f.name.lastIndexOf('.');
-          if (dot > 0) exts[f.name.substring(dot + 1).toLowerCase()] = true;
-        });
-      } else {
-        (groups[project] || []).forEach(function(el) {
-          var names = getFileNames(el) || [];
-          names.forEach(function(n) {
-            var dot = n.lastIndexOf('.');
-            if (dot > 0) exts[n.substring(dot + 1).toLowerCase()] = true;
-          });
-        });
-      }
+    var files = fileCache[project] || [];
+    files.forEach(function(f) {
+      var dot = f.name.lastIndexOf('.');
+      if (dot > 0) exts[f.name.substring(dot + 1).toLowerCase()] = true;
     });
     return Object.keys(exts).sort();
-  }
-
-  // Does this project contain at least one file with the given extension?
-  function projectHasExt(project, ext) {
-    if (!ext || ext === 'all') return true;
-    var files = fileCache[project];
-    if (files && files.length) {
-      return files.some(function(f) { return f.name.toLowerCase().endsWith('.' + ext); });
-    }
-    var snippets = groups[project] || [];
-    for (var i = 0; i < snippets.length; i++) {
-      var names = getFileNames(snippets[i]) || [];
-      if (names.some(function(n) { return n.toLowerCase().endsWith('.' + ext); })) return true;
-    }
-    return false;
   }
 
   // Apply current filters to the sorted project list. Search matches project
@@ -489,7 +464,6 @@
       if (filterState.visibility === 'public' && groupVisibility[project] !== 'public') return false;
       if (filterState.visibility === 'secret' && groupVisibility[project] === 'public') return false;
       if (filterState.starred && !isProjectStarred(project)) return false;
-      if (!projectHasExt(project, filterState.ext)) return false;
       if (q) {
         if (project.toLowerCase().indexOf(q) !== -1) return true;
         var files = fileCache[project];
@@ -1822,27 +1796,39 @@
       });
   }
 
+  // Optimistic toggle: flip local state and rerender immediately so the click
+  // feels instant, then fire the network request. If it fails, revert the
+  // state, rerender, and surface an inline error.
   function handleToggleStar(projectName) {
     var gistIds = (groupGistIds[projectName] || []).slice();
     if (!gistIds.length) return;
 
-    var isStarred = isProjectStarred(projectName);
+    var willStar = !isProjectStarred(projectName);
+
+    var previous = {};
+    gistIds.forEach(function(gistId) {
+      previous[gistId] = !!starredGistIds[gistId];
+      if (willStar) {
+        starredGistIds[gistId] = true;
+      } else {
+        delete starredGistIds[gistId];
+      }
+    });
+    if (rerenderTiles) rerenderTiles();
 
     Promise.all(gistIds.map(function(gistId) {
-      return toggleStarGist(gistId, !isStarred);
-    })).then(function() {
+      return toggleStarGist(gistId, willStar);
+    })).catch(function(err) {
       gistIds.forEach(function(gistId) {
-        if (isStarred) {
-          delete starredGistIds[gistId];
-        } else {
+        if (previous[gistId]) {
           starredGistIds[gistId] = true;
+        } else {
+          delete starredGistIds[gistId];
         }
       });
       if (rerenderTiles) rerenderTiles();
-      flashStatus('\u2713 ' + (isStarred ? 'Unstarred' : 'Starred') + ' "' + projectName + '"');
-    }).catch(function(err) {
       console.warn('[GistOrg] Star toggle failed:', err);
-      window.alert((isStarred ? 'Unstar' : 'Star') + ' failed: ' + (err && err.message ? err.message : 'unknown error'));
+      flashStatus('\u2717 ' + (willStar ? 'Star' : 'Unstar') + ' failed: ' + (err && err.message ? err.message : 'unknown error'), 'error');
     });
   }
 
@@ -2039,13 +2025,53 @@
     });
     leftPanel.appendChild(addRow);
 
+    // File-type filter — only show when the project actually has multiple
+    // extensions to choose between. Scoped to this project and reset on
+    // project open/close (see `projectFileExt`).
+    var projectExts = collectProjectExtensions(activeProject);
+    if (projectFileExt !== 'all' && projectExts.indexOf(projectFileExt) === -1) {
+      projectFileExt = 'all';
+    }
+    if (projectExts.length >= 2) {
+      var extSel = document.createElement('select');
+      extSel.className = 'go-filter-select go-file-filter';
+      var allOpt = document.createElement('option');
+      allOpt.value = 'all'; allOpt.textContent = 'Any file type';
+      extSel.appendChild(allOpt);
+      projectExts.forEach(function(ext) {
+        var o = document.createElement('option');
+        o.value = ext; o.textContent = '.' + ext;
+        extSel.appendChild(o);
+      });
+      extSel.value = projectFileExt;
+      extSel.addEventListener('change', function() {
+        projectFileExt = extSel.value;
+        buildLeftPanel(activeFileObj);
+      });
+      leftPanel.appendChild(extSel);
+    }
+
     var files = fileCache[activeProject] || [];
     if (files.length) {
       var nav = document.createElement('ul');
       nav.className = 'go-file-nav';
-      files.forEach(function(f) {
+
+      function matchesFilter(f) {
+        if (projectFileExt === 'all') return true;
+        var dot = f.name.lastIndexOf('.');
+        var fext = dot > 0 ? f.name.substring(dot + 1).toLowerCase() : '';
+        return fext === projectFileExt;
+      }
+
+      // Render a single file row. If `pinned`, it's the active file shown at
+      // the top even though it doesn't match the current filter — gets an
+      // "(open)" hint so the user sees why it's there.
+      function renderFileRow(f, pinned) {
         var li = document.createElement('li');
-        if (activeFileObj && f === activeFileObj) li.className = 'active';
+        var classes = [];
+        if (activeFileObj && f === activeFileObj) classes.push('active');
+        if (pinned) classes.push('pinned');
+        if (classes.length) li.className = classes.join(' ');
 
         var fnIcon = document.createElement('span');
         fnIcon.className = 'fn-icon';
@@ -2055,6 +2081,13 @@
         fnName.textContent = f.name;
         li.appendChild(fnIcon);
         li.appendChild(fnName);
+
+        if (pinned) {
+          var hint = document.createElement('span');
+          hint.className = 'fn-hint';
+          hint.textContent = '(open)';
+          li.appendChild(hint);
+        }
 
         li.addEventListener('click', function() {
           if (f === activeFile) return;
@@ -2089,7 +2122,17 @@
         });
 
         nav.appendChild(li);
+      }
+
+      // Pin the active file at the top if the filter would otherwise hide it.
+      if (activeFileObj && !matchesFilter(activeFileObj)) {
+        renderFileRow(activeFileObj, true);
+      }
+      files.forEach(function(f) {
+        if (!matchesFilter(f)) return;
+        renderFileRow(f, false);
       });
+
       leftPanel.appendChild(nav);
     }
 
@@ -2129,6 +2172,7 @@
     cmInstance = null;
     hasUnsavedChanges = false;
     preloadState = null;
+    projectFileExt = 'all';
 
     var filterBar = buildFilterBar();
     mainPanel.appendChild(filterBar);
@@ -2185,7 +2229,7 @@
       // Don't show the "+ New Project" tile while filters are active —
       // creating a project with active filters hides it behind the filter.
       var filtering = filterState.search || filterState.starred ||
-                      filterState.visibility !== 'all' || filterState.ext !== 'all';
+                      filterState.visibility !== 'all';
       if (!filtering) grid.appendChild(buildAddProjectTile());
 
       if (!visible.length) {
@@ -2359,27 +2403,6 @@
     starLabel.appendChild(document.createTextNode(' Starred only'));
     controls.appendChild(starLabel);
 
-    // File extension
-    var extSel = document.createElement('select');
-    extSel.className = 'go-filter-select';
-    var allExtOpt = document.createElement('option');
-    allExtOpt.value = 'all'; allExtOpt.textContent = 'Any file type';
-    extSel.appendChild(allExtOpt);
-    collectExtensions().forEach(function(ext) {
-      var o = document.createElement('option');
-      o.value = ext; o.textContent = '.' + ext;
-      extSel.appendChild(o);
-    });
-    extSel.value = filterState.ext || 'all';
-    // If the stored extension is no longer present in any project, reset.
-    if (extSel.value !== filterState.ext) { filterState.ext = 'all'; persistFilterState(); }
-    extSel.addEventListener('change', function() {
-      filterState.ext = extSel.value;
-      persistFilterState();
-      if (rerenderTiles) rerenderTiles();
-    });
-    controls.appendChild(extSel);
-
     // Clear-filters button (only visible when any filter is active)
     var clearBtn = document.createElement('button');
     clearBtn.type = 'button';
@@ -2387,7 +2410,7 @@
     clearBtn.textContent = 'Clear';
     clearBtn.addEventListener('click', function() {
       filterState.search = ''; filterState.visibility = 'all';
-      filterState.starred = false; filterState.ext = 'all';
+      filterState.starred = false;
       persistFilterState();
       renderBrowse();
     });
@@ -2403,6 +2426,7 @@
     activeFile = null;
     cmInstance = null;
     hasUnsavedChanges = false;
+    projectFileExt = 'all';
     outerContainer.classList.add('has-left');
 
     buildLeftPanel(null);
