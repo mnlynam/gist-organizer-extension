@@ -72,3 +72,7 @@ See the [privacy policy](https://mnlynam.github.io/gist-organizer-extension/priv
 ## Support
 
 If you find this useful, consider [buying me a coffee](https://buymeacoffee.com/matthew81).
+
+## License
+
+Released under the [MIT License](LICENSE).
