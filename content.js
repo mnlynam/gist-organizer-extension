@@ -3,7 +3,7 @@
 // https://github.com/mnlynam/gist-organizer-extension
 
 (function () {
-  var VERSION = '2.8.8';
+  var VERSION = '2.8.16';
 
   // Read user settings from chrome.storage.local before we touch the page.
   // We need the 'enabled' flag early to decide whether to activate at all.
@@ -288,6 +288,10 @@
     '.go-context-menu-item.danger { color: var(--fgColor-danger, #f85149); }',
     '.go-context-menu-item.danger:hover { background: var(--bgColor-danger-emphasis, #da3633); color: #fff; }',
     '.go-context-menu-separator { height: 1px; background: var(--borderColor-default, #30363d); margin: 4px 0; }',
+    '.go-context-menu-item.split { cursor: default; }',
+    '.go-context-menu-item.split:hover { background: transparent; color: var(--fgColor-default, #e6edf3); }',
+    '.go-context-link { color: var(--fgColor-accent, #4493f8); cursor: pointer; }',
+    '.go-context-link:hover { text-decoration: underline; }',
 
     // Content header
     '.go-content-header { position: relative; display: flex; align-items: center; justify-content: space-between; padding: 10px 16px; background: var(--bgColor-muted, #161b22); border-bottom: 1px solid var(--borderColor-default, #30363d); flex-shrink: 0; }',
@@ -303,6 +307,9 @@
     '.go-btn-primary { background: #238636; border-color: #238636; color: #fff; }',
     '.go-btn-primary:hover { background: #2ea043; }',
     '.go-btn-primary:disabled { opacity: 0.5; cursor: default; }',
+    '.go-btn-split { display: inline-flex; }',
+    '.go-btn-split .go-btn-split-main { border-top-right-radius: 0; border-bottom-right-radius: 0; border-right: none; }',
+    '.go-btn-split .go-btn-split-chev { border-top-left-radius: 0; border-bottom-left-radius: 0; padding: 5px 8px; }',
 
     // Editor
     '.go-editor-area { flex: 1; overflow: auto; }',
@@ -394,8 +401,13 @@
   var FILTER_STORAGE_KEY = 'gistOrganizer.filters.v1';
   var filterState = loadFilterState();
 
+  // Description used to identify the gist that holds archived files. The
+  // extension creates this gist on first archive and recognizes it across
+  // sessions by description match.
+  var ARCHIVE_DESCRIPTION = 'Gist Organizer Archive';
+
   function loadFilterState() {
-    var defaults = { collapsed: false, search: '', visibility: 'all', starred: false };
+    var defaults = { collapsed: false, search: '', visibility: 'all', starred: false, showArchived: false };
     try {
       var raw = localStorage.getItem(FILTER_STORAGE_KEY);
       if (!raw) return defaults;
@@ -461,6 +473,7 @@
   function filteredProjects() {
     var q = (filterState.search || '').trim().toLowerCase();
     return sortedKeys.filter(function(project) {
+      if (project === ARCHIVE_DESCRIPTION && !filterState.showArchived) return false;
       if (filterState.visibility === 'public' && groupVisibility[project] !== 'public') return false;
       if (filterState.visibility === 'secret' && groupVisibility[project] === 'public') return false;
       if (filterState.starred && !isProjectStarred(project)) return false;
@@ -505,8 +518,11 @@
   });
 
   // --- Fetch helpers ---
-  function fetchGistFiles(gistId) {
-    return fetch('/' + pathUser + '/' + gistId, { credentials: 'include' })
+  function fetchGistFiles(gistId, opts) {
+    // For read-after-write verification we append a timestamp to bypass any
+    // browser/CDN caching that would otherwise return the pre-write page.
+    var url = '/' + pathUser + '/' + gistId + (opts && opts.fresh ? '?_=' + Date.now() : '');
+    return fetch(url, { credentials: 'include' })
       .then(function(res) { return res.text(); })
       .then(function(html) {
         var doc = new DOMParser().parseFromString(html, 'text/html');
@@ -1475,6 +1491,463 @@
     setTimeout(function() { if (status.parentNode) status.remove(); }, kind === 'error' ? 5000 : 2500);
   }
 
+  // --- File link helpers ---
+  // GitHub uses #file-... fragments to link to a specific file inside a gist.
+  // The slug is the filename lowercased with dots replaced by hyphens.
+  function gistFileAnchor(name) {
+    return 'file-' + name.replace(/\./g, '-').toLowerCase();
+  }
+
+  // Pull the revision SHA out of a /raw/ URL like
+  // https://gist.githubusercontent.com/u/abc/raw/<sha>/file.txt.
+  function gistShaFromRawUrl(rawUrl) {
+    if (!rawUrl) return null;
+    var m = /\/raw\/([a-f0-9]+)\//.exec(rawUrl);
+    return m ? m[1] : null;
+  }
+
+  // Build the URL for a given file + variant. The four variants match the
+  // names GitHub itself uses (Y-shortcut → "permalink"; "Raw" button copies
+  // the unpinned raw URL; the REST API `raw_url` field is SHA-pinned and is
+  // commonly called the "raw permalink"). Returns null when a permalink
+  // variant is requested but no SHA is supplied.
+  function buildGistFileUrl(file, variant, sha) {
+    var anchor = gistFileAnchor(file.name);
+    var pageBase = 'https://gist.github.com/' + pathUser + '/' + file.gistId;
+    var rawBase = 'https://gist.githubusercontent.com/' + pathUser + '/' + file.gistId;
+    switch (variant) {
+      case 'gistPage':       return pageBase + '#' + anchor;
+      case 'gistPermalink':  return sha ? pageBase + '/' + sha + '#' + anchor : null;
+      case 'raw':            return rawBase + '/raw/' + file.name;
+      case 'rawPermalink':   return sha ? rawBase + '/raw/' + sha + '/' + file.name : null;
+    }
+    return null;
+  }
+
+  // Resolve a gist's current revision SHA by scraping any /raw/ link on the
+  // gist page. Used when a file was just created in-session and its rawUrl
+  // hasn't been refreshed yet.
+  function fetchGistSha(gistId) {
+    return fetch('/' + pathUser + '/' + gistId, { credentials: 'include' })
+      .then(function(res) {
+        if (!res.ok) throw new Error('Could not load gist (HTTP ' + res.status + ')');
+        return res.text();
+      })
+      .then(function(html) {
+        var m = /\/raw\/([a-f0-9]+)\//.exec(html);
+        if (!m) throw new Error('Could not find revision SHA');
+        return m[1];
+      });
+  }
+
+  function copyToClipboard(text) {
+    if (navigator.clipboard && navigator.clipboard.writeText) {
+      return navigator.clipboard.writeText(text);
+    }
+    return new Promise(function(resolve, reject) {
+      var ta = document.createElement('textarea');
+      ta.value = text;
+      ta.style.position = 'fixed';
+      ta.style.opacity = '0';
+      document.body.appendChild(ta);
+      ta.select();
+      try {
+        var ok = document.execCommand('copy');
+        document.body.removeChild(ta);
+        if (ok) resolve(); else reject(new Error('execCommand copy failed'));
+      } catch (e) {
+        document.body.removeChild(ta);
+        reject(e);
+      }
+    });
+  }
+
+  // Build the two-row inline-link menu items used by both the header
+  // dropdown and the right-click context menu. The 2x2 structure (rows =
+  // viewer/raw, inline links = latest/permalink) mirrors the conceptual
+  // grid: viewer URLs are for humans, raw URLs are for machines; permalink
+  // freezes the SHA. `withCopyVerb` true prefixes each row with "Copy "
+  // (right-click menu where rows aren't grouped under a header).
+  function buildCopyLinkMenuItems(file, withCopyVerb) {
+    function row(label, latestVariant, permalinkVariant) {
+      return { render: function(mi) {
+        mi.appendChild(document.createTextNode(label + ' '));
+        var a = document.createElement('span');
+        a.className = 'go-context-link';
+        a.textContent = 'link';
+        a.addEventListener('click', function(e) {
+          e.stopPropagation();
+          closeContextMenu();
+          copyFileLink(file, latestVariant);
+        });
+        mi.appendChild(a);
+        mi.appendChild(document.createTextNode(' / '));
+        var b = document.createElement('span');
+        b.className = 'go-context-link';
+        b.textContent = 'permalink';
+        b.addEventListener('click', function(e) {
+          e.stopPropagation();
+          closeContextMenu();
+          copyFileLink(file, permalinkVariant);
+        });
+        mi.appendChild(b);
+      }};
+    }
+    if (withCopyVerb) {
+      return [
+        row('Copy gist', 'gistPage', 'gistPermalink'),
+        row('Copy raw', 'raw', 'rawPermalink')
+      ];
+    }
+    return [
+      row('Gist', 'gistPage', 'gistPermalink'),
+      row('Raw', 'raw', 'rawPermalink')
+    ];
+  }
+
+  // Header split-button: main click copies the default (Gist page — the
+  // most-common share-with-a-human use case), chevron opens the dropdown
+  // for the other three variants. Returns the wrapper element.
+  function buildCopyLinkSplitButton(file) {
+    var wrap = document.createElement('span');
+    wrap.className = 'go-btn-split';
+
+    var main = document.createElement('button');
+    main.className = 'go-btn go-btn-split-main';
+    main.textContent = 'Copy link';
+    main.title = 'Copy link to this file (latest viewer URL)';
+    main.addEventListener('click', function() {
+      copyFileLink(file, 'gistPage');
+    });
+
+    var chev = document.createElement('button');
+    chev.className = 'go-btn go-btn-split-chev';
+    chev.textContent = '▾';
+    chev.title = 'More link options';
+    chev.addEventListener('click', function() {
+      var rect = chev.getBoundingClientRect();
+      showContextMenu(rect.left, rect.bottom, buildCopyLinkMenuItems(file, false));
+    });
+
+    wrap.appendChild(main);
+    wrap.appendChild(chev);
+    return wrap;
+  }
+
+  // Copy a file URL of the given variant ('gistPage' | 'gistPermalink' |
+  // 'raw' | 'rawPermalink') and confirm via flashStatus so the user can see
+  // exactly what was copied. Falls back to fetching the SHA when a permalink
+  // variant is requested but the cached rawUrl doesn't have one (e.g. for
+  // newly-created files).
+  function copyFileLink(file, variant) {
+    function done(url) {
+      copyToClipboard(url).then(function() {
+        flashStatus('✓ Copied: ' + url);
+      }).catch(function(err) {
+        flashStatus('✗ Copy failed: ' + (err && err.message ? err.message : 'unknown error'), 'error');
+      });
+    }
+
+    var needsSha = (variant === 'gistPermalink' || variant === 'rawPermalink');
+    if (!needsSha) { done(buildGistFileUrl(file, variant, null)); return; }
+
+    var cachedSha = gistShaFromRawUrl(file.rawUrl);
+    if (cachedSha) { done(buildGistFileUrl(file, variant, cachedSha)); return; }
+
+    fetchGistSha(file.gistId).then(function(sha) {
+      done(buildGistFileUrl(file, variant, sha));
+    }).catch(function(err) {
+      flashStatus('✗ Could not resolve revision: ' + (err && err.message ? err.message : 'unknown error'), 'error');
+    });
+  }
+
+  // --- Archive helpers ---
+
+  // Filename used inside the archive gist:
+  //   {YYYY-MM-DD-HH-mm-ss}--{ProjectName}--{originalName}
+  // Project names containing the `--` delimiter are collapsed to single `-`
+  // so parsing back is unambiguous in the common case.
+  function archiveFilenameFor(projectName, originalName, date) {
+    var d = date || new Date();
+    function pad(n) { return n < 10 ? '0' + n : '' + n; }
+    var ts = d.getFullYear() + '-' + pad(d.getMonth() + 1) + '-' + pad(d.getDate()) + '-' +
+             pad(d.getHours()) + '-' + pad(d.getMinutes()) + '-' + pad(d.getSeconds());
+    var safeProject = projectName.replace(/--/g, '-');
+    return ts + '--' + safeProject + '--' + originalName;
+  }
+
+  // Parse an archive filename back into its parts. Returns null if the name
+  // doesn't match the archive format (treat as a regular file).
+  function parseArchiveFilename(name) {
+    var m = /^(\d{4}-\d{2}-\d{2}-\d{2}-\d{2}-\d{2})--([\s\S]+?)--([\s\S]+)$/.exec(name);
+    if (!m) return null;
+    return { timestamp: m[1], projectName: m[2], originalName: m[3] };
+  }
+
+  // True if the given project name is the archive gist.
+  function isArchiveProject(projectName) {
+    return projectName === ARCHIVE_DESCRIPTION;
+  }
+
+  // Find the archive gist's ID via in-memory state. Returns null if not yet
+  // known (extension hasn't seen it this session and it doesn't exist yet).
+  function findArchiveGistId() {
+    var ids = groupGistIds[ARCHIVE_DESCRIPTION];
+    return (ids && ids[0]) || null;
+  }
+
+  // Resolve to the archive gist's ID, creating it if it doesn't exist. The
+  // newly created gist gets a placeholder README explaining what it is so
+  // it isn't a confusing empty gist if the user finds it on github.com.
+  function ensureArchiveGist() {
+    var existing = findArchiveGistId();
+    if (existing) return Promise.resolve(existing);
+    var placeholder = {
+      name: 'README.md',
+      content: '# Gist Organizer Archive\n\nThis gist is managed by the Gist Organizer Chrome extension. Files here are archives moved from your other projects. Filenames follow the format `{timestamp}--{ProjectName}--{originalName}` so the extension can restore them to the right project.\n'
+    };
+    return createNewGist(ARCHIVE_DESCRIPTION, [placeholder], false).then(function(gistUrl) {
+      var parts = (gistUrl || '').split('/').filter(Boolean);
+      var gistId = parts[parts.length - 1];
+      if (!gistId || gistId.length < 5) throw new Error('Could not determine archive gist ID from ' + gistUrl);
+      // Update in-memory state so subsequent operations find this gist.
+      groupMeta[ARCHIVE_DESCRIPTION] = { files: 1, time: 'just now' };
+      groupGistIds[ARCHIVE_DESCRIPTION] = [gistId];
+      groupVisibility[ARCHIVE_DESCRIPTION] = 'secret';
+      if (sortedKeys.indexOf(ARCHIVE_DESCRIPTION) === -1) {
+        sortedKeys.push(ARCHIVE_DESCRIPTION);
+        sortedKeys.sort(projectCompare);
+      }
+      return gistId;
+    });
+  }
+
+  // Copy a file into the archive gist with the encoded archive filename, then
+  // verify it's there before resolving. Does NOT delete from source — caller
+  // does that explicitly so partial failure leaves source intact.
+  function copyFileToArchive(file, projectName) {
+    return fetchRawContent(file.gistId, file.name).then(function(content) {
+      return ensureArchiveGist().then(function(archiveGistId) {
+        var archiveName = archiveFilenameFor(projectName, file.name);
+        return addFileToGist(archiveGistId, archiveName, content)
+          .then(function() { return fetchGistFiles(archiveGistId, { fresh: true }); })
+          .then(function(files) {
+            var found = files.some(function(f) { return f.name === archiveName; });
+            if (!found) throw new Error('Verification failed: "' + archiveName + '" not in archive after upload');
+            return archiveName;
+          });
+      });
+    });
+  }
+
+  // Archive a single file: copy + verify + delete-from-source.
+  function archiveFile(file, projectName) {
+    return copyFileToArchive(file, projectName).then(function() {
+      return deleteFileFromGist(file.gistId, file.name);
+    });
+  }
+
+  // Archive every file in every gist of a project, then delete the source
+  // gists. Files copy in sequence (each touches the gist's edit form, which
+  // serializes anyway) so partial failure stops cleanly.
+  function archiveProject(projectName) {
+    var gistIds = (groupGistIds[projectName] || []).slice();
+    if (!gistIds.length) return Promise.reject(new Error('No gists found for "' + projectName + '"'));
+
+    var cached = fileCache[projectName];
+    var ensureFiles = (cached && cached.length)
+      ? Promise.resolve(cached.slice())
+      : Promise.all(gistIds.map(fetchGistFiles)).then(function(results) {
+          var all = [];
+          results.forEach(function(fs) { all = all.concat(fs); });
+          return all;
+        });
+
+    return ensureFiles.then(function(allFiles) {
+      return allFiles.reduce(function(p, f) {
+        return p.then(function() { return copyFileToArchive(f, projectName); });
+      }, Promise.resolve());
+    }).then(function() {
+      // All files verified in archive — safe to delete the source gists.
+      return Promise.all(gistIds.map(deleteGist));
+    });
+  }
+
+  // Restore one archived file to its original project. If the original
+  // project no longer exists, create a new gist for it. Verifies the file
+  // landed in the destination before deleting from archive.
+  function unarchiveFile(file) {
+    var parsed = parseArchiveFilename(file.name);
+    if (!parsed) return Promise.reject(new Error('"' + file.name + '" is not an archive filename'));
+
+    return fetchRawContent(file.gistId, file.name).then(function(content) {
+      var existingIds = groupGistIds[parsed.projectName];
+      if (existingIds && existingIds.length) {
+        var destGistId = existingIds[0];
+        return addFileToGist(destGistId, parsed.originalName, content)
+          .then(function() { return fetchGistFiles(destGistId, { fresh: true }); })
+          .then(function(files) {
+            var found = files.some(function(f) { return f.name === parsed.originalName; });
+            if (!found) throw new Error('Verification failed: file not in destination project');
+            return deleteFileFromGist(file.gistId, file.name);
+          });
+      }
+      // Original project gone — create a new gist for it. Use the user's
+      // default visibility so the restored project matches their convention.
+      var isPublic = settings.defaultVisibility === 'public';
+      return createNewGist(parsed.projectName, [{ name: parsed.originalName, content: content }], isPublic)
+        .then(function(gistUrl) {
+          var parts = (gistUrl || '').split('/').filter(Boolean);
+          var newGistId = parts[parts.length - 1];
+          if (!newGistId || newGistId.length < 5) throw new Error('Could not determine new gist ID');
+          // Mirror createProject's in-memory bookkeeping so the project shows
+          // up immediately in the tile grid after the page returns.
+          groupMeta[parsed.projectName] = { files: 1, time: 'just now' };
+          groupGistIds[parsed.projectName] = [newGistId];
+          groupVisibility[parsed.projectName] = isPublic ? 'public' : 'secret';
+          if (sortedKeys.indexOf(parsed.projectName) === -1) {
+            sortedKeys.push(parsed.projectName);
+            sortedKeys.sort(projectCompare);
+          }
+          return deleteFileFromGist(file.gistId, file.name);
+        });
+    });
+  }
+
+  // UI handlers — confirm with the user, run the operation, refresh state.
+  // Optimistic-UI handlers: the in-memory state is mutated first so the file
+  // (or project) appears to disappear instantly, then the network operation
+  // runs in the background. If the verify-then-delete step fails, the
+  // snapshot is restored and an error flash explains. Modeled on the
+  // optimistic star/unstar pattern.
+
+  function handleArchiveFile(file, projectName) {
+    var files = fileCache[projectName] || [];
+    if (files.length <= 1) {
+      window.alert('Cannot archive the only file in a project. Use "Archive project" instead.');
+      return;
+    }
+    if (!confirm('Archive "' + file.name + '"? It will be moved to your archive gist.')) return;
+
+    // Snapshot for revert.
+    var origIndex = files.indexOf(file);
+    var origMeta = groupMeta[projectName] ? Object.assign({}, groupMeta[projectName]) : null;
+    var wasActive = (activeFile === file);
+
+    // Optimistic update.
+    if (origIndex !== -1) files.splice(origIndex, 1);
+    if (origMeta) groupMeta[projectName].files = Math.max(0, origMeta.files - 1);
+    if (wasActive) {
+      var nextFile = files[Math.min(origIndex, files.length - 1)] || files[0] || null;
+      if (nextFile) openFile(nextFile);
+      else { activeFile = null; buildLeftPanel(null); mainPanel.innerHTML = '<div class="go-loading">No files found</div>'; }
+    } else if (activeProject === projectName) {
+      buildLeftPanel(activeFile);
+    } else if (rerenderTiles) {
+      rerenderTiles();
+    }
+
+    archiveFile(file, projectName).then(function() {
+      delete rawCache[file.gistId + ':' + file.name];
+      delete editPageCache[file.gistId];
+      var archiveId = findArchiveGistId();
+      if (archiveId) { delete fileCache[ARCHIVE_DESCRIPTION]; delete editPageCache[archiveId]; }
+    }).catch(function(err) {
+      if (files.indexOf(file) === -1) {
+        files.splice(Math.min(origIndex, files.length), 0, file);
+      }
+      if (origMeta) groupMeta[projectName] = origMeta;
+      if (activeProject === projectName) buildLeftPanel(activeFile);
+      else if (rerenderTiles) rerenderTiles();
+      console.warn('[GistOrg] Archive failed:', err);
+      flashStatus('✗ Archive failed: ' + (err && err.message ? err.message : 'unknown error'), 'error');
+    });
+  }
+
+  function handleArchiveProject(projectName) {
+    var fileCount = (groupMeta[projectName] && groupMeta[projectName].files) || 0;
+    if (!confirm('Archive project "' + projectName + '" (' + fileCount + ' file' + (fileCount !== 1 ? 's' : '') + ')? All files will be moved to your archive gist and the source gists will be deleted.')) return;
+
+    // Snapshot.
+    var origFileCache = fileCache[projectName];
+    var origMeta = groupMeta[projectName];
+    var origGistIds = groupGistIds[projectName];
+    var origVisibility = groupVisibility[projectName];
+    var origIndex = sortedKeys.indexOf(projectName);
+    var wasActive = (activeProject === projectName);
+
+    // Optimistic: drop the project from in-memory state and re-render.
+    delete fileCache[projectName];
+    delete groupMeta[projectName];
+    delete groupGistIds[projectName];
+    delete groupVisibility[projectName];
+    if (origIndex !== -1) sortedKeys.splice(origIndex, 1);
+    if (wasActive) renderBrowse();
+    else if (rerenderTiles) rerenderTiles();
+
+    archiveProject(projectName).then(function() {
+      var archiveId = findArchiveGistId();
+      if (archiveId) { delete fileCache[ARCHIVE_DESCRIPTION]; delete editPageCache[archiveId]; }
+    }).catch(function(err) {
+      if (origFileCache) fileCache[projectName] = origFileCache;
+      if (origMeta) groupMeta[projectName] = origMeta;
+      if (origGistIds) groupGistIds[projectName] = origGistIds;
+      if (origVisibility) groupVisibility[projectName] = origVisibility;
+      if (sortedKeys.indexOf(projectName) === -1) {
+        sortedKeys.splice(Math.max(0, origIndex), 0, projectName);
+      }
+      if (rerenderTiles) rerenderTiles();
+      console.warn('[GistOrg] Archive project failed:', err);
+      flashStatus('✗ Archive project failed: ' + (err && err.message ? err.message : 'unknown error'), 'error');
+    });
+  }
+
+  function handleUnarchiveFile(file) {
+    var parsed = parseArchiveFilename(file.name);
+    if (!parsed) {
+      flashStatus('✗ "' + file.name + '" is not a recognized archive filename', 'error');
+      return;
+    }
+    if (!confirm('Unarchive "' + parsed.originalName + '" back to project "' + parsed.projectName + '"?')) return;
+
+    // Snapshot the archive view's state.
+    var archiveFiles = fileCache[ARCHIVE_DESCRIPTION] || [];
+    var origIndex = archiveFiles.indexOf(file);
+    var origMeta = groupMeta[ARCHIVE_DESCRIPTION] ? Object.assign({}, groupMeta[ARCHIVE_DESCRIPTION]) : null;
+    var wasActive = (activeFile === file);
+
+    // Optimistic: remove from archive view immediately.
+    if (origIndex !== -1) archiveFiles.splice(origIndex, 1);
+    if (origMeta) groupMeta[ARCHIVE_DESCRIPTION].files = Math.max(0, origMeta.files - 1);
+    if (activeProject === ARCHIVE_DESCRIPTION) {
+      if (wasActive) {
+        var nextFile = archiveFiles[Math.min(origIndex, archiveFiles.length - 1)] || archiveFiles[0] || null;
+        if (nextFile) openFile(nextFile);
+        else { activeFile = null; buildLeftPanel(null); mainPanel.innerHTML = '<div class="go-loading">No files found</div>'; }
+      } else {
+        buildLeftPanel(activeFile);
+      }
+    }
+
+    unarchiveFile(file).then(function() {
+      // Drop caches so the destination project picks up the new file when next opened.
+      delete fileCache[parsed.projectName];
+      var destIds = groupGistIds[parsed.projectName] || [];
+      destIds.forEach(function(id) { delete editPageCache[id]; });
+      delete rawCache[file.gistId + ':' + file.name];
+      var archiveId = findArchiveGistId();
+      if (archiveId) delete editPageCache[archiveId];
+    }).catch(function(err) {
+      if (archiveFiles.indexOf(file) === -1) {
+        archiveFiles.splice(Math.min(origIndex, archiveFiles.length), 0, file);
+      }
+      if (origMeta) groupMeta[ARCHIVE_DESCRIPTION] = origMeta;
+      if (activeProject === ARCHIVE_DESCRIPTION) buildLeftPanel(activeFile);
+      console.warn('[GistOrg] Unarchive failed:', err);
+      flashStatus('✗ Unarchive failed: ' + (err && err.message ? err.message : 'unknown error'), 'error');
+    });
+  }
+
   // Handle a FileList (from drag-drop or file input) being added to the
   // currently open project. Walks the list sequentially — each upload has to
   // wait for the previous one because they all POST to the same gist's edit
@@ -1934,13 +2407,21 @@
         menu.appendChild(sep);
       }
       var mi = document.createElement('div');
-      mi.className = 'go-context-menu-item' + (item.danger ? ' danger' : '');
-      mi.textContent = item.label;
-      mi.addEventListener('click', function(e) {
-        e.stopPropagation();
-        closeContextMenu();
-        item.action();
-      });
+      // Items can either be a simple { label, action } pair or supply a
+      // `render(mi)` callback to populate the row themselves (used for
+      // multi-action rows with inline-link styling).
+      if (item.render) {
+        mi.className = 'go-context-menu-item split';
+        item.render(mi);
+      } else {
+        mi.className = 'go-context-menu-item' + (item.danger ? ' danger' : '');
+        mi.textContent = item.label;
+        mi.addEventListener('click', function(e) {
+          e.stopPropagation();
+          closeContextMenu();
+          item.action();
+        });
+      }
       menu.appendChild(mi);
     });
 
@@ -2109,16 +2590,31 @@
 
         li.addEventListener('contextmenu', function(e) {
           e.preventDefault();
-          showContextMenu(e.clientX, e.clientY, [
-            { label: 'Rename', action: function() {
+          var inArchive = isArchiveProject(activeProject);
+          var items = [];
+          if (!inArchive) {
+            items.push({ label: 'Rename', action: function() {
               startInlineEdit(fnName, f.name, function(newName) {
                 renameFile(f, newName, fnName);
               });
-            }},
-            { label: 'Delete', danger: true, action: function() {
-              deleteFile(f);
-            }}
-          ]);
+            }});
+          }
+          // Two split-rows mirroring the header dropdown: gist (HTML viewer)
+          // and raw (plaintext), each with inline-clickable link/permalink.
+          buildCopyLinkMenuItems(f, true).forEach(function(item) { items.push(item); });
+          if (inArchive) {
+            items.push({ label: 'Unarchive', action: function() {
+              handleUnarchiveFile(f);
+            }});
+          } else {
+            items.push({ label: 'Archive', action: function() {
+              handleArchiveFile(f, activeProject);
+            }});
+          }
+          items.push({ label: 'Delete file', danger: true, action: function() {
+            deleteFile(f);
+          }});
+          showContextMenu(e.clientX, e.clientY, items);
         });
 
         nav.appendChild(li);
@@ -2286,22 +2782,31 @@
     tile.addEventListener('contextmenu', function(e) {
       e.preventDefault();
       var starred = isProjectStarred(project);
+      var isArchive = isArchiveProject(project);
       var menuItems = [
         { label: starred ? 'Unstar' : 'Star', action: function() {
           handleToggleStar(project);
-        }},
-        { label: 'Rename', action: function() {
+        }}
+      ];
+      // The archive gist's name and contents are managed by the extension —
+      // renaming it would orphan it (lookup is by description), and archiving
+      // an archive doesn't make sense.
+      if (!isArchive) {
+        menuItems.push({ label: 'Rename', action: function() {
           startInlineEdit(nameSpan, project, function(newName) {
             renameProject(project, newName, nameSpan);
           });
-        }}
-      ];
-      if (groupVisibility[project] !== 'public') {
-        menuItems.push({ label: 'Make Public', action: function() {
-          handleMakeProjectPublic(project);
+        }});
+        if (groupVisibility[project] !== 'public') {
+          menuItems.push({ label: 'Make Public', action: function() {
+            handleMakeProjectPublic(project);
+          }});
+        }
+        menuItems.push({ label: 'Archive project', action: function() {
+          handleArchiveProject(project);
         }});
       }
-      menuItems.push({ label: 'Delete', danger: true, action: function() {
+      menuItems.push({ label: 'Delete project', danger: true, action: function() {
         handleDeleteProject(project);
       }});
       showContextMenu(e.clientX, e.clientY, menuItems);
@@ -2403,6 +2908,21 @@
     starLabel.appendChild(document.createTextNode(' Starred only'));
     controls.appendChild(starLabel);
 
+    // Show-archived toggle
+    var archLabel = document.createElement('label');
+    archLabel.className = 'go-filter-star';
+    var archCb = document.createElement('input');
+    archCb.type = 'checkbox';
+    archCb.checked = !!filterState.showArchived;
+    archCb.addEventListener('change', function() {
+      filterState.showArchived = archCb.checked;
+      persistFilterState();
+      if (rerenderTiles) rerenderTiles();
+    });
+    archLabel.appendChild(archCb);
+    archLabel.appendChild(document.createTextNode(' Show archived'));
+    controls.appendChild(archLabel);
+
     // Clear-filters button (only visible when any filter is active)
     var clearBtn = document.createElement('button');
     clearBtn.type = 'button';
@@ -2410,7 +2930,7 @@
     clearBtn.textContent = 'Clear';
     clearBtn.addEventListener('click', function() {
       filterState.search = ''; filterState.visibility = 'all';
-      filterState.starred = false;
+      filterState.starred = false; filterState.showArchived = false;
       persistFilterState();
       renderBrowse();
     });
@@ -2577,15 +3097,18 @@
     editBtn.textContent = 'Edit';
     editBtn.addEventListener('click', function() { enterEditMode(file); });
 
+    var copyBtn = buildCopyLinkSplitButton(file);
+
     var openBtn = document.createElement('button');
     openBtn.className = 'go-btn';
     openBtn.textContent = 'Open on GitHub';
     openBtn.addEventListener('click', function() {
-      var anchor = 'file-' + file.name.replace(/\./g, '-').toLowerCase();
+      var anchor = gistFileAnchor(file.name);
       window.open('/' + pathUser + '/' + file.gistId + '#' + anchor, '_blank');
     });
 
     actions.appendChild(editBtn);
+    actions.appendChild(copyBtn);
     actions.appendChild(openBtn);
     header.appendChild(nameSpan);
     header.appendChild(actions);
@@ -2618,11 +3141,13 @@
     saveBtn.textContent = 'Save';
     saveBtn.disabled = true;
 
+    var copyBtn = buildCopyLinkSplitButton(file);
+
     var openBtn = document.createElement('button');
     openBtn.className = 'go-btn';
     openBtn.textContent = 'Open on GitHub';
     openBtn.addEventListener('click', function() {
-      var anchor = 'file-' + file.name.replace(/\./g, '-').toLowerCase();
+      var anchor = gistFileAnchor(file.name);
       window.open('/' + pathUser + '/' + file.gistId + '#' + anchor, '_blank');
     });
 
@@ -2637,6 +3162,7 @@
       actions.appendChild(cancelBtn);
     }
 
+    actions.appendChild(copyBtn);
     actions.appendChild(openBtn);
     actions.appendChild(saveBtn);
     header.appendChild(nameSpan);

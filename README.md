@@ -26,6 +26,8 @@ A Chrome extension that replaces the flat GitHub Gist list with a project-based 
 - **Upload files** — drag-and-drop files or use "+ Upload file..." to add existing files
 - **Delete files** — remove individual files from a project via the right-click context menu
 - **Filter files by type** — when a project has multiple extensions, a dropdown in the left panel narrows the file list; the open file stays pinned at the top if it doesn't match
+- **Copy file links** — split-button "Copy link ▾" in each file's header: clicking the main button copies the **Gist page** URL (latest viewer, the most-common share-with-a-human case); the chevron opens a 2×2 menu of all variants — **Gist link/permalink** (HTML viewer pages, latest or SHA-locked) and **Raw link/permalink** (plaintext content, latest or SHA-locked). Same options appear in the file's right-click menu
+- **Archive files and projects** — right-click → Archive moves a file (or whole project) into a dedicated `Gist Organizer Archive` gist (auto-created on first use, hidden from the project list by default; toggle "Show archived" in the filter bar to see it). Filenames in the archive are timestamped with their original project name so you can restore them later via right-click → Unarchive
 - **Create projects** — drag-and-drop a folder onto the tile grid or use "+ New Project" to create a new gist project
 - **Delete projects** — remove entire projects via the right-click context menu on tiles
 - **Make projects public** — convert secret gists to public from the context menu
@@ -56,7 +58,7 @@ Each gist's **description** is used as the project name. Gists with the same des
 
 ## Install
 
-Install from the [Chrome Web Store](#) or load unpacked:
+Install from the [Chrome Web Store](https://chromewebstore.google.com/detail/gist-organizer/iciendbcnpjibknlfmlpnjpmmnoefbkm) or load unpacked:
 
 1. Clone this repo
 2. Open `chrome://extensions`
