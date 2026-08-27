@@ -4,7 +4,7 @@ _Last updated: April 11, 2026_
 
 This Privacy Policy describes how the **Gist Organizer** Chrome extension
 ("the Extension") handles information. The Extension is published on the
-Chrome Web Store under the item ID `pnajobjidclpmiicfdalepdmjnpjbdpa`.
+Chrome Web Store under the item ID `iciendbcnpjibknlfmlpnjpmmnoefbkm`.
 
 ## Summary
 
