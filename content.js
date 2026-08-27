@@ -3,7 +3,7 @@
 // https://github.com/mnlynam/gist-organizer-extension
 
 (function () {
-  var VERSION = '2.8.16';
+  var VERSION = '2.8.21';
 
   // Read user settings from chrome.storage.local before we touch the page.
   // We need the 'enabled' flag early to decide whether to activate at all.
@@ -213,6 +213,9 @@
     '.go-tile .tile-name.editing { display: block; -webkit-line-clamp: unset; overflow: visible; white-space: normal; word-break: break-word; background: var(--bgColor-default, #0d1117); outline: 2px solid var(--borderColor-accent-emphasis, #1f6feb); cursor: text; user-select: text; }',
     '.go-tile .tile-name.saving { opacity: 0.5; }',
     '.go-tile .tile-meta { font-size: 10px; color: var(--fgColor-muted, #7d8590); }',
+    '.go-tile-archive { background: var(--bgColor-muted, #161b22); border-color: var(--borderColor-muted, #484f58); }',
+    '.go-tile-archive .tile-icon { opacity: 0.85; }',
+    '.go-tile-archive .tile-name { color: var(--fgColor-muted, #7d8590); }',
     '.go-tile-add { border-style: dashed; opacity: 0.6; }',
     '.go-tile-add:hover { opacity: 1; }',
     '.go-tile-add .tile-icon { font-size: 28px; color: var(--fgColor-accent, #4493f8); }',
@@ -2465,7 +2468,7 @@
     ptName.textContent = activeProject;
     var ptMeta = document.createElement('div');
     ptMeta.className = 'pt-meta';
-    ptMeta.textContent = groupMeta[activeProject].files + ' files';
+    ptMeta.textContent = groupMeta[activeProject].files + ' file' + (groupMeta[activeProject].files !== 1 ? 's' : '');
     ptText.appendChild(ptName);
     ptText.appendChild(ptMeta);
     pt.appendChild(ptIcon);
@@ -2737,9 +2740,20 @@
         grid.appendChild(empty);
       }
 
+      // The archive isn't a user-created project \u2014 it's a system container,
+      // like a trash folder. Exclude it from both counts so showing or
+      // hiding it doesn't change the project count. When the archive is
+      // visible, append a note so the user understands why their tile count
+      // (which includes the archive) doesn't match the project count.
+      function notArchive(p) { return p !== ARCHIVE_DESCRIPTION; }
+      var totalCount = sortedKeys.filter(notArchive).length;
+      var visibleCount = visible.filter(notArchive).length;
+      var archiveShown = visible.indexOf(ARCHIVE_DESCRIPTION) !== -1;
+
       footer.textContent = 'Gist Organizer v' + VERSION + ' \u00B7 ' +
-        visible.length + ' of ' + sortedKeys.length + ' project' +
-        (sortedKeys.length !== 1 ? 's' : '');
+        visibleCount + ' of ' + totalCount + ' project' +
+        (totalCount !== 1 ? 's' : '') +
+        (archiveShown ? ' \u00B7 plus archive' : '');
     }
     rerenderTiles = redraw;
     redraw();
@@ -2747,8 +2761,9 @@
 
   function buildProjectTile(project) {
     var meta = groupMeta[project];
+    var isArchive = isArchiveProject(project);
     var tile = document.createElement('div');
-    tile.className = 'go-tile';
+    tile.className = 'go-tile' + (isArchive ? ' go-tile-archive' : '');
     var vis = groupVisibility[project] || 'secret';
     var metaText = meta.files + ' file' + (meta.files !== 1 ? 's' : '');
     if (meta.time) metaText += ' \u00B7 ' + meta.time;
@@ -2756,7 +2771,9 @@
 
     var iconSpan = document.createElement('span');
     iconSpan.className = 'tile-icon';
-    iconSpan.textContent = '\uD83D\uDCC1';
+    // Archive gist gets the box icon to read instantly as a different kind
+    // of container vs. the folder icon used for regular projects.
+    iconSpan.textContent = isArchive ? '\uD83D\uDCE6' : '\uD83D\uDCC1';
     var nameSpan = document.createElement('span');
     nameSpan.className = 'tile-name';
     nameSpan.textContent = project;
@@ -2782,7 +2799,6 @@
     tile.addEventListener('contextmenu', function(e) {
       e.preventDefault();
       var starred = isProjectStarred(project);
-      var isArchive = isArchiveProject(project);
       var menuItems = [
         { label: starred ? 'Unstar' : 'Star', action: function() {
           handleToggleStar(project);
@@ -3303,7 +3319,7 @@
   renderBrowse();
   revealPage();
   fetchStarredGists(); // populates starredGistIds, then rerenders tiles
-  console.log('[GistOrg] v' + VERSION + ' loaded, ' + sortedKeys.length + ' projects');
+  console.log('[GistOrg] v' + VERSION + ' loaded, ' + sortedKeys.length + ' project' + (sortedKeys.length !== 1 ? 's' : ''));
 
   } // end main()
 })();
